@@ -12,7 +12,7 @@ docker compose run --rm --build plugin-test
 
 This clean standalone installation runs typechecking, offline tests, server/Admin build, declaration/export checks and an npm tarball inspection. It does not use the consuming store application code, a database, carrier credentials or real shipments. CI runs the same command. `npm pack` creates a local archive only; there is no publishing job.
 
-For a local consuming application, build this package, run `npm pack`, then install the resulting `.tgz` into your Medusa project. Pin reviewed Git revisions if using a source install, and build before consuming the exported `.medusa/server` files. Do not assume an unbuilt Git checkout is an installable runtime artifact.
+For a local consuming application, build this package, run `npm pack`, then install the resulting `.tgz` into your Medusa project. Pin reviewed HTTPS Git revisions for source installs. The package `prepare` script builds and checks its server/Admin/type exports during installation; approve only that exact reviewed revision in npm lifecycle policy.
 
 ## Medusa configuration
 
@@ -93,3 +93,7 @@ MIT, original copyright (c) 2024 SAM-AEL; maintained adaptations by Abhimanyu Sa
 The source passes 93 offline plugin tests, typechecking, server/Admin builds and package export checks. These checks do not certify successful carrier AWB assignment. Actual sandbox AWB requests returned HTTP 200 with `awb_assign_status: 0` after roughly 31 seconds; the precise carrier rejection is unresolved. No automatic pickup is performed by fulfillment creation.
 
 The retained document generator currently requests a manifest using `order_ids` before a pickup. The sandbox lifecycle guide instead requires an assigned AWB plus requested pickup and a `shipment_id` array. That known discrepancy is deliberately recorded rather than silently changing lifecycle behavior. No npm release has been published.
+
+## Order widget availability
+
+Packed parcel and delivery selection render only after the backend confirms an enabled native Shiprocket provider and an applicable order shipping option with remaining shippable items. Stale quote metadata on manual, canceled or fully fulfilled orders does not display the controls. This check reads native Medusa data only and never authenticates to the carrier. Source widget exports are provided for consuming-application tests without copying package source.

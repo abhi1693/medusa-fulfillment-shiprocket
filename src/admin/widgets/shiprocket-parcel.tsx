@@ -1,3 +1,4 @@
+import { useShiprocketOrder } from "../hooks/use-shiprocket-order"
 import { defineWidgetConfig } from "@medusajs/admin-sdk"
 import type { DetailWidgetProps, HttpTypes } from "@medusajs/framework/types"
 import {
@@ -25,9 +26,20 @@ const fields = [
   ["height_mm", "Height (mm)"],
 ] as const
 const ParcelWidget = ({ data }: DetailWidgetProps<HttpTypes.AdminOrder>) => {
-  const methods = (data.shipping_methods || []).filter(
-    (method) => (method.data as any)?.shiprocket_quote
+  const { applicable, optionIds } = useShiprocketOrder(data)
+  const methods = (data.shipping_methods || []).filter((m) =>
+    optionIds.includes(m.shipping_option_id!)
   )
+  if (!applicable || !methods.length) return null
+  return <ParcelForm data={data} methods={methods} />
+}
+const ParcelForm = ({
+  data,
+  methods,
+}: {
+  data: HttpTypes.AdminOrder
+  methods: NonNullable<HttpTypes.AdminOrder["shipping_methods"]>
+}) => {
   const [option, setOption] = useState(methods[0]?.shipping_option_id || "")
   const [values, setValues] = useState<Record<string, string>>({})
   const [quantities, setQuantities] = useState<Record<string, string>>({})

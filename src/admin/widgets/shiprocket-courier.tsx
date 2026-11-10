@@ -1,17 +1,21 @@
+import { useShiprocketOrder } from "../hooks/use-shiprocket-order"
 import { defineWidgetConfig } from "@medusajs/admin-sdk"
 import type { DetailWidgetProps, HttpTypes } from "@medusajs/framework/types"
 import { Container, Heading } from "@medusajs/ui"
 import { FulfillmentCourier } from "../components/fulfillment-courier"
 const CourierWidget = ({ data }: DetailWidgetProps<HttpTypes.AdminOrder>) => {
+  const { applicable, optionIds } = useShiprocketOrder(data)
   const unfulfilled = data.items?.some(
     (item) =>
       item.requires_shipping &&
       Number(item.quantity) > Number(item.detail?.fulfilled_quantity || 0)
   )
   const methods = (data.shipping_methods || []).filter(
-    (method) => (method.data as any)?.shiprocket_quote?.courier_company_id
+    (method) =>
+      optionIds.includes(method.shipping_option_id!) &&
+      (method.data as any)?.shiprocket_quote?.courier_company_id
   )
-  if (!unfulfilled || !methods.length) return null
+  if (!applicable || !unfulfilled || !methods.length) return null
   return (
     <Container>
       <Heading level="h2">Shiprocket delivery selection</Heading>
