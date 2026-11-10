@@ -1,0 +1,9 @@
+services:
+  plugin-test:
+    build:
+      context: .
+      target: testing
+    init: true
+    environment:
+      CI: "true"
+      MEDUSA_DISABLE_TELEMETRY: "true"

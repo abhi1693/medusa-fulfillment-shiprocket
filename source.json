@@ -1,0 +1,7 @@
+{
+  "repository": "https://github.com/abhi1693/medusa-fulfillment-shiprocket",
+  "package": "@abhi1693/medusa-fulfillment-shiprocket",
+  "license": "MIT",
+  "source_directory": "src",
+  "target_medusa_version": "2.22.4"
+}

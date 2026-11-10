@@ -1,0 +1,11 @@
+name: Standalone plugin
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate isolated installation, tests and tarball
+        run: docker compose run --rm --build plugin-test

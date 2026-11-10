@@ -1,0 +1,123 @@
+{
+  "name": "@abhi1693/medusa-fulfillment-shiprocket",
+  "version": "2.0.0",
+  "description": "Shiprocket India fulfillment and live rates provider for Medusa v2.",
+  "author": "SAM-AEL (https://www.github.com/SAM-AEL)",
+  "homepage": "https://github.com/abhi1693/medusa-fulfillment-shiprocket#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/abhi1693/medusa-fulfillment-shiprocket.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "files": [
+    ".medusa/server",
+    "src",
+    "scripts",
+    "tsconfig.json",
+    "source.json",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "main": ".medusa/server/src/providers/shiprocket/index.js",
+  "exports": {
+    ".": {
+      "types": "./.medusa/server/src/providers/shiprocket/index.d.ts",
+      "default": "./.medusa/server/src/providers/shiprocket/index.js"
+    },
+    "./package.json": "./package.json",
+    "./.medusa/server/src/modules/*": "./.medusa/server/src/modules/*/index.js",
+    "./modules/*": "./.medusa/server/src/modules/*/index.js",
+    "./providers/*": "./.medusa/server/src/providers/*/index.js",
+    "./api/*": "./.medusa/server/src/api/*.js",
+    "./*": "./.medusa/server/src/*.js",
+    "./admin": {
+      "import": "./.medusa/server/src/admin/index.mjs",
+      "require": "./.medusa/server/src/admin/index.js",
+      "default": "./.medusa/server/src/admin/index.js"
+    },
+    "./workflows": {
+      "types": "./.medusa/server/src/workflows/index.d.ts",
+      "default": "./.medusa/server/src/workflows/index.js"
+    },
+    "./source/admin/widgets/*": "./src/admin/widgets/*.tsx",
+    "./source/admin/components/*": "./src/admin/components/*.tsx",
+    "./source/admin/hooks/*": "./src/admin/hooks/*.ts",
+    "./source/admin/lib/*": "./src/admin/lib/*.ts",
+    "./providers/shiprocket/client/manager": {
+      "types": "./.medusa/server/src/providers/shiprocket/client/manager.d.ts",
+      "default": "./.medusa/server/src/providers/shiprocket/client/manager.js"
+    },
+    "./providers/shiprocket/client/config": {
+      "types": "./.medusa/server/src/providers/shiprocket/client/config.d.ts",
+      "default": "./.medusa/server/src/providers/shiprocket/client/config.js"
+    },
+    "./providers/shiprocket/utils/quote": {
+      "types": "./.medusa/server/src/providers/shiprocket/utils/quote.d.ts",
+      "default": "./.medusa/server/src/providers/shiprocket/utils/quote.js"
+    },
+    "./providers/shiprocket/utils/dimensions": {
+      "types": "./.medusa/server/src/providers/shiprocket/utils/dimensions.d.ts",
+      "default": "./.medusa/server/src/providers/shiprocket/utils/dimensions.js"
+    }
+  },
+  "keywords": [
+    "medusa",
+    "medusajs",
+    "medusa-plugin",
+    "medusa-v2",
+    "medusa-plugin-integration",
+    "medusa-plugin-shipping"
+  ],
+  "scripts": {
+    "build": "medusa plugin:build && tsc --emitDeclarationOnly --declaration",
+    "dev": "medusa plugin:develop",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "test": "node --no-warnings --loader ./scripts/ts-loader.mjs --test src/tests/*.test.ts",
+    "check:package": "node scripts/check-package.mjs",
+    "prepublishOnly": "npm run build && npm run check:package",
+    "prepare": "npm run build && npm run check:package"
+  },
+  "dependencies": {
+    "axios": "^1.7.0"
+  },
+  "devDependencies": {
+    "@medusajs/admin-sdk": "2.22.4",
+    "@medusajs/cli": "2.22.4",
+    "@medusajs/framework": "2.22.4",
+    "@medusajs/icons": "2.22.4",
+    "@medusajs/medusa": "2.22.4",
+    "@medusajs/test-utils": "2.22.4",
+    "@medusajs/ui": "4.2.11",
+    "@swc/core": "1.16.22",
+    "@types/node": "24.19.2",
+    "@types/react": "18.3.31",
+    "@types/react-dom": "18.3.7",
+    "prop-types": "^15.8.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "ts-node": "10.9.2",
+    "typescript": "5.9.3",
+    "vite": "7.3.7",
+    "yalc": "^1.0.0-pre.53"
+  },
+  "peerDependencies": {
+    "@medusajs/framework": "^2.22.4",
+    "@medusajs/medusa": "^2.22.4"
+  },
+  "engines": {
+    "node": ">=22.22.0"
+  },
+  "packageManager": "npm@12.2.2",
+  "types": ".medusa/server/src/providers/shiprocket/index.d.ts",
+  "contributors": [
+    "Abhimanyu Saharan (https://github.com/abhi1693)"
+  ],
+  "bugs": {
+    "url": "https://github.com/abhi1693/medusa-fulfillment-shiprocket/issues"
+  }
+}
