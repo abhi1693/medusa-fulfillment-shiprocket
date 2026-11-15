@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { indiaStateName } from "../../../shared/india-state"
 import {
   recoverFulfillmentAttempt,
@@ -38,6 +39,7 @@ import {
   CourierQuoteError,
   courierPolicy,
   courierChoices,
+  courierDecisionRows,
   selectCourier,
   assertMatchingCourier,
   type CourierPolicy,
@@ -151,10 +153,16 @@ export default class ShiprocketClient {
     const { allowed_courier_ids, ...request } = { ...data, cod: 0 }
     const key = JSON.stringify(request)
     const cached = this.rateCache.get(key)
-    if (!fresh && cached && Date.now() - cached.timestamp < this.CACHE_TTL)
+    if (!fresh && cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
+      this.logRateInput(data, "cache_hit")
       return cached.rows
+    }
     const pending = this.rateRequests.get(key)
-    if (pending) return pending
+    if (pending) {
+      this.logRateInput(data, "shared_inflight_request")
+      return pending
+    }
+    this.logRateInput(data, fresh ? "fresh_api_request" : "api_request")
     const operation = (async () => {
       const response = await (
         await this.getSharedAxios()
@@ -262,12 +270,96 @@ export default class ShiprocketClient {
     )
   }
   async quotes(data: ShiprocketCalculateRateRequest): Promise<CourierQuote[]> {
-    return courierChoices(
-      await this.courierRows(data),
-      this.policy,
-      data.allowed_courier_ids
+    const rows = await this.courierRows(data)
+    return this.selectRates(rows, data)
+  }
+  private logRateInput(data: ShiprocketCalculateRateRequest, source: string) {
+    if (process.env.SHIPROCKET_RATE_DIAGNOSTICS === "false") return
+    this.logger?.info(
+      "Shiprocket rate input " +
+        JSON.stringify({
+          route_id: this.rateRouteId(data),
+          source,
+          prepaid: true,
+          weight_kg: data.weight,
+          length_cm: data.length ?? null,
+          breadth_cm: data.breadth ?? null,
+          height_cm: data.height ?? null,
+          policy: this.policy,
+          allowed_courier_ids: data.allowed_courier_ids ?? [],
+          cache_ttl_ms: this.CACHE_TTL,
+        })
     )
   }
+  private rateRouteId(data: ShiprocketCalculateRateRequest) {
+    // Correlate the lane/parcel without logging customer postcodes or addresses.
+    return createHash("sha256")
+      .update(
+        JSON.stringify([
+          data.pickup_postcode,
+          data.delivery_postcode,
+          data.weight,
+          data.length ?? null,
+          data.breadth ?? null,
+          data.height ?? null,
+        ])
+      )
+      .digest("hex")
+      .slice(0, 16)
+  }
+  private selectRates(
+    rows: any[],
+    data: ShiprocketCalculateRateRequest,
+    selectedId?: number,
+    single = false
+  ): CourierQuote[] {
+    let choices: CourierQuote[] = []
+    try {
+      choices = !single
+        ? courierChoices(rows, this.policy, data.allowed_courier_ids)
+        : [
+            selectCourier(
+              rows,
+              this.policy,
+              data.allowed_courier_ids,
+              selectedId
+            ),
+          ]
+      return choices
+    } finally {
+      if (process.env.SHIPROCKET_RATE_DIAGNOSTICS !== "false")
+        this.logger?.info(
+          "Shiprocket rate decision " +
+            JSON.stringify({
+              route_id: this.rateRouteId(data),
+              policy: this.policy,
+              selection: !single
+                ? "best_per_service"
+                : selectedId === undefined
+                  ? "best_overall"
+                  : "revalidate_selected_courier",
+              requested_courier_id: selectedId ?? null,
+              ranking:
+                this.policy.selection === "highest_rating"
+                  ? ["rating_desc", "amount_asc", "courier_id_asc"]
+                  : ["amount_asc", "courier_id_asc"],
+              preference_relaxation_order: [
+                "call_before_delivery",
+                "pod",
+                "real_time_tracking",
+              ],
+              outcome: choices.length ? "selected" : "no_eligible_courier",
+              candidates: courierDecisionRows(
+                rows,
+                this.policy,
+                data.allowed_courier_ids,
+                choices
+              ),
+            })
+        )
+    }
+  }
+
   async quote(
     data: ShiprocketCalculateRateRequest,
     expected?: unknown,
@@ -285,11 +377,11 @@ export default class ShiprocketClient {
       throw new CourierQuoteError(
         "Invalid selected Shiprocket courier; select shipping again"
       )
-    const quote = selectCourier(
+    const [quote] = this.selectRates(
       await this.courierRows(data, fresh),
-      this.policy,
-      data.allowed_courier_ids,
-      selectedId
+      data,
+      selectedId,
+      true
     )
     if (validate && expected && typeof expected === "object") {
       // Identity/category are always enforced; merchant policy only controls cost acceptance.

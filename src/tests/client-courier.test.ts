@@ -594,3 +594,67 @@ test("fulfillment sends the same minimum dimensions for serviceability and the p
     )
   )
 })
+
+test("rate diagnostics explain cache, rejection, fallback and selection without raw customer data", async (t) => {
+  const messages: string[] = []
+  const previous = process.env.SHIPROCKET_RATE_DIAGNOSTICS
+  delete process.env.SHIPROCKET_RATE_DIAGNOSTICS
+  t.after(() => {
+    if (previous === undefined) delete process.env.SHIPROCKET_RATE_DIAGNOSTICS
+    else process.env.SHIPROCKET_RATE_DIAGNOSTICS = previous
+  })
+  const f = setup(t, {
+    require_real_time_tracking: true,
+    preferred_call_before_delivery: true,
+    logger: {
+      info: (m: string) => messages.push(m),
+      warn: () => {},
+      debug: () => {},
+      error: () => {},
+    },
+  })
+  f.setRows([
+    {
+      ...courier,
+      courier_company_id: 1,
+      rate: 10,
+      realtime_tracking: "Not Available",
+      secret: "DO_NOT_LOG",
+    },
+    { ...courier, call_before_delivery: "Not Available" },
+    { ...courier, courier_company_id: 3, is_surface: true, rate: 80 },
+  ])
+  const input = {
+    pickup_postcode: "110077",
+    delivery_postcode: "122001",
+    weight: 1,
+    cod: 0,
+  }
+  const choices = await f.client.quotes(input)
+  assert.deepEqual(
+    choices.map((q) => q.courier_company_id),
+    [2, 3]
+  )
+  await f.client.quote(input)
+  const decision = JSON.parse(
+    messages
+      .find((m) => m.startsWith("Shiprocket rate decision "))!
+      .slice("Shiprocket rate decision ".length)
+  )
+  assert.equal(decision.candidates[0].status, "rejected")
+  assert.deepEqual(decision.candidates[0].reasons, [
+    "real_time_tracking_required",
+  ])
+  assert.deepEqual(decision.candidates[1].relaxed_preferences, [
+    "call_before_delivery",
+  ])
+  assert.equal(decision.candidates[2].status, "selected")
+  assert.ok(messages.some((m) => m.includes("cache_hit")))
+  assert.ok(!messages.join("").includes("DO_NOT_LOG"))
+  assert.ok(!messages.join("").includes("122001"))
+  assert.ok(!messages.join("").includes("110077"))
+  const before = messages.length
+  process.env.SHIPROCKET_RATE_DIAGNOSTICS = "false"
+  await f.client.quotes(input)
+  assert.equal(messages.length, before)
+})

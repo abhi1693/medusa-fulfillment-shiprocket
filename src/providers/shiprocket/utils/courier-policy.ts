@@ -301,3 +301,63 @@ export function courierChoices(
     )
   return result
 }
+
+/** Allowlisted decision evidence; never serialize raw carrier responses. */
+export function courierDecisionRows(
+  rows: any[],
+  policy: CourierPolicy,
+  allowed?: number[],
+  selected: CourierQuote[] = []
+) {
+  return rows.map((row) => {
+    const q = courierQuote(row, policy)
+    if (!q) return { status: "rejected", reasons: ["invalid_identity_or_rate"] }
+    const reasons: string[] = []
+    if (q.service === null) reasons.push("unknown_service")
+    if (allowed?.length && !allowed.includes(q.courier_company_id))
+      reasons.push("not_in_allowed_couriers")
+    if (policy.require_real_time_tracking && q.realtime_tracking !== true)
+      reasons.push("real_time_tracking_required")
+    if (policy.require_call_before_delivery && q.call_before_delivery !== true)
+      reasons.push("call_before_delivery_required")
+    if (policy.pod !== "any" && q.pod !== policy.pod)
+      reasons.push("pod_requirement")
+    if (policy.selection === "highest_rating" && q.rating === null)
+      reasons.push("rating_missing")
+    const winner = selected.find(
+      (choice) =>
+        choice.courier_company_id === q.courier_company_id &&
+        choice.service === q.service
+    )
+    return {
+      courier_id: q.courier_company_id,
+      service: q.service,
+      carrier_amount_inr: q.amount,
+      rating: q.rating,
+      realtime_tracking: q.realtime_tracking,
+      pod: q.pod,
+      call_before_delivery: q.call_before_delivery,
+      status: reasons.length
+        ? "rejected"
+        : winner
+          ? "selected"
+          : "eligible_not_selected",
+      reasons,
+      unmet_preferences: [
+        ...(policy.preferred_call_before_delivery &&
+        q.call_before_delivery !== true
+          ? ["call_before_delivery"]
+          : []),
+        ...(policy.preferred_pod &&
+        policy.preferred_pod !== "any" &&
+        q.pod !== policy.preferred_pod
+          ? ["pod"]
+          : []),
+        ...(policy.preferred_real_time_tracking && q.realtime_tracking !== true
+          ? ["real_time_tracking"]
+          : []),
+      ],
+      ...(winner ? { relaxed_preferences: winner.relaxed_preferences } : {}),
+    }
+  })
+}
