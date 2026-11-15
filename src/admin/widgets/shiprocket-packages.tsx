@@ -81,9 +81,9 @@ function Packages({ id }: { id: string }) {
               </Text>
               <Text size="small">
                 {Number(p.measurements.weight_grams) / 1000} kg ·{" "}
-                {Number(p.measurements.length_mm) / 10} ×{" "}
-                {Number(p.measurements.width_mm) / 10} ×{" "}
-                {Number(p.measurements.height_mm) / 10} cm
+                {Math.ceil(Number(p.measurements.length_mm) / 10)} ×{" "}
+                {Math.ceil(Number(p.measurements.width_mm) / 10)} ×{" "}
+                {Math.ceil(Number(p.measurements.height_mm) / 10)} cm
               </Text>
             </div>
           ))}
