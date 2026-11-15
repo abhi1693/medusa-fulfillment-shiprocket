@@ -1,3 +1,4 @@
+import { packedUnitInputs } from "./packed-unit-plan"
 import {
   quoteSignature as signature,
   signedCourierClaim,
@@ -114,6 +115,11 @@ export function verifyCourierQuote(
         ))
   )
     return fail()
+  if (claim.quote.parcel_plan) {
+    const actual = packedUnitInputs(context).map(({key, variant_id, quantity, measurements}) => ({key, variant_id, quantity, measurements}))
+    const paid = claim.quote.parcel_plan.units.map(({key, variant_id, quantity, measurements}: any) => ({key, variant_id, quantity, measurements}))
+    if (JSON.stringify(actual) !== JSON.stringify(paid)) return fail()
+  }
   return claim.params
 }
 

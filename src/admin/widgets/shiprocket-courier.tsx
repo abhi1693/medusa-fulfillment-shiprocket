@@ -13,6 +13,7 @@ const CourierWidget = ({ data }: DetailWidgetProps<HttpTypes.AdminOrder>) => {
   const methods = (data.shipping_methods || []).filter(
     (method) =>
       optionIds.includes(method.shipping_option_id!) &&
+      !(method.data as any)?.shiprocket_quote?.parcel_plan &&
       (method.data as any)?.shiprocket_quote?.courier_company_id
   )
   if (!applicable || !unfulfilled || !methods.length) return null

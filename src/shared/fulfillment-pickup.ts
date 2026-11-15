@@ -1,3 +1,4 @@
+import { paidPackedUnitPlan, selectPackedUnit } from "./packed-unit-plan"
 import { orderShipmentAllocation } from "./order-shipment-allocation"
 import type { ExistingOrderBinding } from "./existing-order"
 import { financialSnapshot, type FulfillmentFinancials } from "./order-money"
@@ -202,9 +203,11 @@ export async function prepareFulfillmentPickup(
       "The pickup ID linked in this location's metadata could not be verified in Shiprocket; review the saved ID and API connection"
     )
   }
+  const plan = paidPackedUnitPlan(quote)
+  const unit = plan ? selectPackedUnit(plan, order.items || [], input.items || []) : undefined
   const override = order.metadata?.shiprocket_fulfillment_couriers?.[optionId]
-  let courier = quote
-  if (override) {
+  let courier = unit?.courier || quote
+  if (override && !unit) {
     if (
       override.scope !== scope ||
       override.location_id !== locationId ||
@@ -230,10 +233,11 @@ export async function prepareFulfillmentPickup(
       pickup,
       courier,
       attempt_id: input.additional_data?.shiprocket_attempt_id,
-      parcel: input.items?.length
+      parcel: unit ? { ...unit.measurements, items: input.items } : input.items?.length
         ? packedParcelForItems(order.metadata, optionId, input.items)
         : undefined,
-      item_measurements: shiprocketItemMeasurements(order.items || []),
+      item_measurements: unit ? { [input.items![0].id]: unit.measurements } : shiprocketItemMeasurements(order.items || []),
+      package_id: unit?.id,
       resume,
       recovery_reference: recoveryReference,
       billing_address: order.billing_address,
@@ -268,6 +272,7 @@ export function readFulfillmentContext(
   quote: any
 ): {
   pickup: PickupSnapshot
+  package_id?: string
   courier?: Record<string, any>
   item_measurements: Record<string, ShippingMeasurements>
   shipping_charge?: Record<string, any>
@@ -302,6 +307,7 @@ export function readFulfillmentContext(
     return {
       pickup: requirePickupSnapshot(claim.pickup, locationId, scope),
       courier: claim.courier,
+      package_id: claim.package_id,
       shipping_charge: claim.shipping_charge,
       attempt_id: claim.attempt_id,
       parcel: claim.parcel,

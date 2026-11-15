@@ -474,52 +474,19 @@ export default class ShiprocketClient {
     const pad = (n: number) => n.toString().padStart(2, "0")
     const orderDate = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 
-    // Calculate totals and dimensions
-    for (const item of items) {
-      const orderItem = orderItemMap.get(item.line_item_id)
-      if (!orderItem) {
-        throw new MedusaError(
-          MedusaError.Types.INVALID_DATA,
-          `Order item not found for fulfillment item: ${item.title}`
-        )
-      }
-
-      const variant = orderItem.variant
-      if (!variant) {
-        throw new MedusaError(
-          MedusaError.Types.INVALID_DATA,
-          `Variant data missing for item: ${item.title}`
-        )
-      }
-
-      const product = (variant as any).product
-
-      const {
-        weightKg: weight,
-        length,
-        width: breadth,
-        height,
-      } = getLineItemDimensions(variant, itemMeasurements?.[orderItem.id])
-
-      // Strict Validation: Shiprocket fines for incorrect dimensions
-      if (
-        !measuredParcel &&
-        ![weight, length, breadth, height].every(
-          (value) => Number.isFinite(value) && value > 0
-        )
-      ) {
-        throw new MedusaError(
-          MedusaError.Types.INVALID_DATA,
-          `Missing dimensions/weight for "${item.title}". Please set them on the Variant or Product.`
-        )
-      }
-
-      const quantity = Number(item.quantity || item.raw_quantity?.value || 1)
-      totalUnits += quantity
-      totalWeight += weight * quantity
-      totalLength = Math.max(totalLength, length)
-      totalBreadth = Math.max(totalBreadth, breadth)
-      totalHeight += height * quantity
+    // Physical units come from commercial order quantities, not inventory BOM components.
+    const commercial = financials?.selected_items || items.map((item: any) => ({ id: item.line_item_id, quantity: Number(item.quantity) }))
+    for (const item of commercial) {
+      const orderItem = orderItemMap.get(item.id)
+      if (!orderItem) throw new MedusaError(MedusaError.Types.INVALID_DATA, "Order item missing from package")
+      const m = getLineItemDimensions(orderItem.variant, itemMeasurements?.[item.id])
+      if (!measuredParcel && ![m.weightKg, m.length, m.width, m.height].every((v) => Number.isFinite(v) && v > 0))
+        throw new MedusaError(MedusaError.Types.INVALID_DATA, "Complete native packed weight and dimensions before shipping")
+      totalUnits += Number(item.quantity)
+      totalWeight = m.weightKg
+      totalLength = m.length
+      totalBreadth = m.width
+      totalHeight = m.height
     }
 
     const shipping =
@@ -537,7 +504,7 @@ export default class ShiprocketClient {
     if (totalUnits > 1 && !measuredParcel)
       throw new MedusaError(
         MedusaError.Types.INVALID_DATA,
-        "Measured packed parcel is required for multi-item Shiprocket fulfillment"
+        "Dispatch one packed unit per fulfillment, or use Dispatch packages"
       )
     const packed = measuredParcel
       ? shiprocketQuote({

@@ -210,7 +210,7 @@ test("multi-item fulfillment requires a measured parcel rather than an invented 
         courier_company_id: 2,
         amount: 50,
       }),
-    /Measured packed parcel/
+    /Dispatch one packed unit/
   )
   assert.equal(f.calls.length, 0)
   await f.client.create(

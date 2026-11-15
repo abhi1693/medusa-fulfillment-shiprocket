@@ -18,7 +18,7 @@ export function signedCourierClaim(
     if (
       !quote ||
       typeof quote.quote_token !== "string" ||
-      quote.quote_token.length > 12000
+      quote.quote_token.length > 128000
     )
       return undefined
     const parts = quote.quote_token.split(".")

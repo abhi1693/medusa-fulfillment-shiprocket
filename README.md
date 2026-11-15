@@ -58,7 +58,7 @@ Create and maintain saved pickup addresses in Shiprocket. On the Medusa location
 
 ## Rates, units and courier choice
 
-Prepaid only. Native unit weights are grams and dimensions millimetres; requests convert to kg/cm. Multi-item estimates sum weight times quantity and omit invented combined carton dimensions. Dispatch requires measured packed-parcel data. Native pricing-context hooks load required product measurements. Cart item mutations invalidate the selection without carrier requests; delivery-stage pricing fetches quotes.
+Prepaid only. Native unit weights are grams and dimensions millimetres; requests convert to kg/cm. Native attributes must describe each final packed sellable unit. Checkout quotes each distinct unit geometry, charges for every unit and offers only services available to every package. The signed paid quote retains the immutable package plan; later catalog edits do not change it. Native pricing-context hooks load required product measurements. Cart item mutations invalidate the selection without carrier requests; delivery-stage pricing fetches quotes.
 
 `SHIPROCKET_COURIER_SELECTION=lowest_price|highest_rating` defaults to lowest price. Required filters are `SHIPROCKET_REQUIRE_REAL_TIME_TRACKING`, `SHIPROCKET_POD_REQUIREMENT=any|instant|on_request`, `SHIPROCKET_REQUIRE_CALL_BEFORE_DELIVERY`. Unknown capabilities fail required filters. Optional preferences are `SHIPROCKET_PREFERRED_REAL_TIME_TRACKING`, `SHIPROCKET_PREFERRED_POD`, `SHIPROCKET_PREFERRED_CALL_BEFORE_DELIVERY`; `SHIPROCKET_COURIER_FALLBACK=relax_preferences|none` defaults to relaxing optional call-before-delivery, then POD, then tracking, from the same returned list. Required serviceability, prepaid payment, positive cost and hard filters are never relaxed. No undocumented SLA adherence score is invented.
 
@@ -66,7 +66,7 @@ The quote includes the actual courier identity, price, ETA and any relaxed prefe
 
 ## Measured parcels and fulfillment selection
 
-**Packed parcel** on an order records actual outer-package weight in grams, dimensions in millimeters, and exact selected item quantities. Weight is prefilled from selected quantities with variant/product fallback and remains editable. The native fulfillment action must use that same selection. Saving a parcel never creates a shipment.
+**Shipping packages** replaces manual parcel entry. The package list shows native packed measurements and carrier quotes. Dispatch packages creates one native partial fulfillment and ordinary Shiprocket order/AWB per physical unit. The consuming application supplies the authorized `/admin/shiprocket-fulfillment/:id/packages` GET/POST orchestrator, performs all-package preflight and budget validation, and uses public native workflows with durable per-selection recovery. Successful packages remain fulfilled if a later package fails. The customer has one combined shipping charge. Factory multipacks are one parcel when their SKU measurements describe the whole packed carton. Legacy paid orders retain their existing recovery/measurement data and require review rather than silent conversion.
 
 All transmitted length, breadth and height values are floored at 0.5 cm after conversion. Stored measurements remain unchanged. Serviceability and order creation use the same normalized dimensions; missing/invalid measurements remain errors.
 
@@ -96,7 +96,7 @@ The retained document generator currently requests a manifest using `order_ids` 
 
 ## Order widget availability
 
-Packed parcel and delivery selection render only after the backend confirms an enabled native Shiprocket provider and an applicable order shipping option with remaining shippable items. Stale quote metadata on manual, canceled or fully fulfilled orders does not display the controls. This check reads native Medusa data only and never authenticates to the carrier. Source widget exports are provided for consuming-application tests without copying package source.
+Shipping packages and legacy delivery selection render only after the backend confirms an enabled native Shiprocket provider and an applicable order shipping option with remaining shippable items. Stale quote metadata on manual, canceled or fully fulfilled orders does not display the controls. This check reads native Medusa data only and never authenticates to the carrier. Source widget exports are provided for consuming-application tests without copying package source.
 
 ## Split-origin carts
 

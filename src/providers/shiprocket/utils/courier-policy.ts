@@ -79,6 +79,7 @@ export function courierPolicy(
   }
 }
 export type CourierQuote = {
+  parcel_plan?: import("../../../shared/packed-unit-plan").PackedUnitPlan
   shipment_allocation?: import("../../../shared/cart-shipment-plan").ShipmentAllocation
   courier_company_id: number
   courier_name: string
