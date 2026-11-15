@@ -353,7 +353,8 @@ export default class ShiprocketClient {
                 rows,
                 this.policy,
                 data.allowed_courier_ids,
-                choices
+                choices,
+                !single
               ),
             })
         )

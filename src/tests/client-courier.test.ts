@@ -658,3 +658,13 @@ test("rate diagnostics explain cache, rejection, fallback and selection without 
   await f.client.quotes(input)
   assert.equal(messages.length, before)
 })
+
+test("overall quote diagnostics preserve unknown-service eligibility while checkout excludes it", async (t) => {
+  const messages: string[] = []
+  const f = setup(t, { logger: { info: (m: string) => messages.push(m), warn: () => {}, debug: () => {}, error: () => {} } })
+  f.setRows([{...courier, is_surface: undefined}])
+  await f.client.quote({pickup_postcode: "110077", delivery_postcode: "122001", weight: 1, cod: 0})
+  const record = JSON.parse(messages.find(m => m.startsWith("Shiprocket rate decision "))!.slice("Shiprocket rate decision ".length))
+  assert.equal(record.candidates[0].status, "selected")
+  assert.deepEqual(record.candidates[0].reasons, [])
+})

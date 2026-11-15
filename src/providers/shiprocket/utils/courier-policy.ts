@@ -307,13 +307,14 @@ export function courierDecisionRows(
   rows: any[],
   policy: CourierPolicy,
   allowed?: number[],
-  selected: CourierQuote[] = []
+  selected: CourierQuote[] = [],
+  requireKnownService = true
 ) {
   return rows.map((row) => {
     const q = courierQuote(row, policy)
     if (!q) return { status: "rejected", reasons: ["invalid_identity_or_rate"] }
     const reasons: string[] = []
-    if (q.service === null) reasons.push("unknown_service")
+    if (requireKnownService && q.service === null) reasons.push("unknown_service")
     if (allowed?.length && !allowed.includes(q.courier_company_id))
       reasons.push("not_in_allowed_couriers")
     if (policy.require_real_time_tracking && q.realtime_tracking !== true)
