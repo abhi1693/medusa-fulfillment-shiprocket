@@ -8,6 +8,11 @@ import {
   type ShippingMeasurements,
 } from "../providers/shiprocket/utils/quote"
 import type { CourierQuote } from "../providers/shiprocket/utils/courier-policy"
+import { MedusaError } from "@medusajs/framework/utils"
+
+function invalid(message: string): never {
+  throw new MedusaError(MedusaError.Types.INVALID_DATA, message)
+}
 
 export type PackedUnit = {
   key: string
@@ -36,7 +41,7 @@ export function packedUnitInputs(context: Record<string, any>) {
     if (item.requires_shipping === false) continue
     const quantity = Number(item.quantity)
     if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > 1000)
-      throw Error("Packed unit quantity must be between 1 and 1000")
+      invalid("Packed unit quantity must be between 1 and 1000")
     const m =
       context.shiprocket_item_measurements?.[item.id] || measurements[item.id]
     if (
@@ -45,13 +50,13 @@ export function packedUnitInputs(context: Record<string, any>) {
         (v) => Number.isFinite(Number(v)) && Number(v) > 0
       )
     )
-      throw Error(
+      invalid(
         "Complete the packed weight and dimensions for every product before shipping"
       )
     const key = shipmentLineKey(item)
     const previous = rows.get(key)
     if (previous && JSON.stringify(previous.measurements) !== JSON.stringify(m))
-      throw Error("Conflicting packed measurements for the same order line")
+      invalid("Conflicting packed measurements for the same order line")
     rows.set(key, {
       key,
       variant_id: item.variant_id || item.variant?.id,
@@ -61,8 +66,8 @@ export function packedUnitInputs(context: Record<string, any>) {
     })
   }
   if (rows.size > 50)
-    throw Error("A shipping order supports up to 50 distinct packed products")
-  if (!rows.size) throw Error("At least one packed shipping unit is required")
+    invalid("A shipping order supports up to 50 distinct packed products")
+  if (!rows.size) invalid("At least one packed shipping unit is required")
   return [...rows.values()].sort((a, b) => a.key.localeCompare(b.key))
 }
 /** One quote request per distinct geometry; one charge per physical packed unit. */
@@ -123,7 +128,7 @@ export async function quotePackedUnits(
     })
   }
   if (!choices.length)
-    throw Error(
+    invalid(
       "No common delivery service is available for all packed products"
     )
   return { choices, params: inputs[0].params }
@@ -134,11 +139,11 @@ export function paidPackedUnitPlan(quote: any): PackedUnitPlan | undefined {
   const plan = claim?.quote?.parcel_plan
   if (!plan) {
     if (quote?.parcel_plan)
-      throw Error("The paid package plan could not be verified")
+      invalid("The paid package plan could not be verified")
     return undefined
   }
   if (plan.version !== 1 || !Array.isArray(plan.units) || !plan.units.length)
-    throw Error("The paid package plan is invalid; review this order")
+    invalid("The paid package plan is invalid; review this order")
   return plan
 }
 export function selectPackedUnit(
@@ -148,7 +153,7 @@ export function selectPackedUnit(
   optionId = ""
 ) {
   if (selected.length !== 1 || Number(selected[0].quantity) !== 1)
-    throw Error(
+    invalid(
       "Dispatch one packed unit per fulfillment, or use Dispatch packages"
     )
   const line = orderItems.find((i) => i.id === selected[0].id)
@@ -163,7 +168,7 @@ export function selectPackedUnit(
     0
   )
   if (!unit || ordered !== unit.quantity || ordinal >= unit.quantity)
-    throw Error("Order quantities no longer match the paid package plan")
+    invalid("Order quantities no longer match the paid package plan")
   return {
     ...unit,
     id: createHash("sha256")
@@ -201,7 +206,7 @@ export function remainingPackedUnits(order: any) {
         lines.reduce((n: number, l: any) => n + Number(l.quantity), 0) !==
         unit.quantity
       )
-        throw Error("Order quantities no longer match the paid package plan")
+        invalid("Order quantities no longer match the paid package plan")
       let ordinal = lines.reduce(
         (n: number, l: any) => n + Number(l.detail?.fulfilled_quantity || 0),
         0

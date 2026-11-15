@@ -71,6 +71,8 @@ The quote includes the actual courier identity, price, ETA and any relaxed prefe
 
 The package list rounds each displayed dimension upward to the next whole centimetre (for example 28.56 × 44.24 × 4.37 cm displays as 29 × 45 × 5 cm). Weight remains in kg with its original precision. This is presentation only; saved measurements, quote calculations and fulfillment requests retain their existing values.
 
+Known packed-unit selection and paid-plan validation failures use native HTTP 400 `invalid_data` responses, preserving actionable messages such as “Dispatch one packed unit per fulfillment, or use Dispatch packages.” These helpers leave unexpected exceptions on the native generic-error path rather than exposing their internal messages. See [Medusa error handling](https://docs.medusajs.com/learn/fundamentals/api-routes/errors).
+
 All transmitted length, breadth and height values are floored at 0.5 cm after conversion. Stored measurements remain unchanged. Serviceability and order creation use the same normalized dimensions; missing/invalid measurements remain errors.
 
 The Admin courier widget lists current eligible alternatives in the customer's purchased air/surface category, with rate, ETA and budget state. Its merchant-policy API is supplied by the consuming application; see [consumer adapter requirements](docs/CONSUMER_ADAPTER.md). This repository contains the reusable provider and UI, not the consuming store order-lock/recovery and customer-price policy. It is not yet a drop-in standalone implementation of that merchant API.

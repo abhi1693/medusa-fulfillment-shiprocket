@@ -1,5 +1,6 @@
 import test from "node:test"
 import assert from "node:assert/strict"
+import { errorHandler } from "@medusajs/framework/http"
 import {
   packedUnitInputs,
   quotePackedUnits,
@@ -47,6 +48,32 @@ const quote = (service: "air" | "surface", amount = 127.72): CourierQuote => ({
   relaxed_preferences: [],
   quoted_at: new Date().toISOString(),
 })
+function responseFor(error: unknown) {
+  let status = 0
+  let body: any
+  errorHandler()(
+    error,
+    { scope: { resolve: () => ({ info() {}, error() {} }) } } as any,
+    {
+      status(code: number) {
+        status = code
+        return this
+      },
+      json(value: any) {
+        body = value
+      },
+    } as any,
+    () => {}
+  )
+  return { status, body }
+}
+const validationResponse = (message: string) => (error: unknown) => {
+  const { status, body } = responseFor(error)
+  assert.equal(status, 400)
+  assert.equal(body.type, "invalid_data")
+  assert.equal(body.message, message)
+  return true
+}
 test("quotes packed dimensions, deduplicates identical geometry and charges every unit", async () => {
   const calls: any[] = []
   const c = context([item("a", 2), item("b")])
@@ -170,4 +197,58 @@ test("signed plan rejects tampering and catalog changes, freezes paid measuremen
   )
   native[0].quantity = 3
   assert.throws(() => remainingPackedUnits(order), /quantities/)
+})
+
+test("multiple packed units reach the native Admin error response with actionable guidance", async () => {
+  const result = await quotePackedUnits(context([item("a", 2)]), async () => [
+    quote("surface"),
+  ])
+  assert.throws(
+    () =>
+      selectPackedUnit(result.choices[0].parcel_plan!, [item("a", 2)], [
+        { id: "a", quantity: 2 },
+      ]),
+    validationResponse(
+      "Dispatch one packed unit per fulfillment, or use Dispatch packages"
+    )
+  )
+})
+
+test("unverified or malformed paid plans retain their validation messages at the HTTP boundary", async () => {
+  process.env.JWT_SECRET = "test-packed-unit-signing-secret-long-enough"
+  assert.throws(
+    () => paidPackedUnitPlan({ parcel_plan: { version: 1, units: [] } }),
+    validationResponse("The paid package plan could not be verified")
+  )
+  const c = context()
+  const result = await quotePackedUnits(c, async () => [quote("surface")])
+  const invalid = signCourierQuote(
+    { ...result.choices[0], parcel_plan: { version: 2, units: [] } } as any,
+    result.params,
+    c
+  )
+  assert.throws(
+    () => paidPackedUnitPlan(invalid),
+    validationResponse("The paid package plan is invalid; review this order")
+  )
+})
+
+test("unexpected exceptions stay internal instead of becoming customer-facing validation messages", () => {
+  const unexpected = Error("Internal fixture details must not be exposed")
+  const broken = Object.defineProperty(item(), "requires_shipping", {
+    get() {
+      throw unexpected
+    },
+  })
+  assert.throws(
+    () => packedUnitInputs(context([broken])),
+    (error) => {
+      assert.equal(error, unexpected)
+      const { status, body } = responseFor(error)
+      assert.equal(status, 500)
+      assert.equal(body.type, "unknown_error")
+      assert.equal(body.message, "An unknown error occurred.")
+      return true
+    }
+  )
 })
