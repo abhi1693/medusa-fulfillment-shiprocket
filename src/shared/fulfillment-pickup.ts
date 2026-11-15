@@ -205,7 +205,12 @@ export async function prepareFulfillmentPickup(
   }
   const plan = paidPackedUnitPlan(quote)
   const unit = plan
-    ? selectPackedUnit(plan, allocatedLines || order.items || [], input.items || [])
+    ? selectPackedUnit(
+        plan,
+        allocatedLines || order.items || [],
+        input.items || [],
+        optionId
+      )
     : undefined
   const override = order.metadata?.shiprocket_fulfillment_couriers?.[optionId]
   let courier = unit?.courier || quote

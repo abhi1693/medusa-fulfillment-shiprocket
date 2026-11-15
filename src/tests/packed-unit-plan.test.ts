@@ -103,13 +103,21 @@ test("signed plan rejects tampering and catalog changes, freezes paid measuremen
   const result = await quotePackedUnits(c, async () => [quote("surface")])
   const signed = signCourierQuote(result.choices[0], result.params, c)
   const verified = readCourierQuote(signed, c, courierPolicy()).quote
-  const reduced = { ...c, items: c.items.map((item) => ({ ...item, variant: { weight: 680 } })) }
-  assert.equal(readCourierQuote(signed, reduced, courierPolicy()).quote.amount, signed.amount)
+  const reduced = {
+    ...c,
+    items: c.items.map((item) => ({ ...item, variant: { weight: 680 } })),
+  }
+  assert.equal(
+    readCourierQuote(signed, reduced, courierPolicy()).quote.amount,
+    signed.amount
+  )
   const plan = paidPackedUnitPlan(verified)!
   assert.equal(plan.units[0].quantity, 2)
   const changed = structuredClone(c)
   changed.items[0].variant.weight = 900
-  ;(changed as any).shiprocket_item_measurements = {a: {weight_grams:900,length_mm:206,width_mm:206,height_mm:46}}
+  ;(changed as any).shiprocket_item_measurements = {
+    a: { weight_grams: 900, length_mm: 206, width_mm: 206, height_mm: 46 },
+  }
   assert.throws(
     () => readCourierQuote(signed, changed, courierPolicy()),
     /expired or changed/
@@ -122,13 +130,21 @@ test("signed plan rejects tampering and catalog changes, freezes paid measuremen
     { ...item("a", 2), id: "order_line", detail: { fulfilled_quantity: 0 } },
   ]
   native[0].variant.weight = 900
-  const first = selectPackedUnit(plan, native, [
-    { id: "order_line", quantity: 1 },
-  ])
+  const first = selectPackedUnit(
+    plan,
+    native,
+    [{ id: "order_line", quantity: 1 }],
+    "option"
+  )
   assert.equal(first.measurements.weight_grams, 680)
   native[0].detail.fulfilled_quantity = 1
   assert.notEqual(
-    selectPackedUnit(plan, native, [{ id: "order_line", quantity: 1 }]).id,
+    selectPackedUnit(
+      plan,
+      native,
+      [{ id: "order_line", quantity: 1 }],
+      "option"
+    ).id,
     first.id
   )
   const order = {
@@ -141,7 +157,12 @@ test("signed plan rejects tampering and catalog changes, freezes paid measuremen
   assert.equal(remaining.length, 1)
   assert.equal(
     remaining[0].id,
-    selectPackedUnit(plan, native, [{ id: "order_line", quantity: 1 }]).id
+    selectPackedUnit(
+      plan,
+      native,
+      [{ id: "order_line", quantity: 1 }],
+      "option"
+    ).id
   )
   assert.throws(
     () => selectPackedUnit(plan, native, [{ id: "order_line", quantity: 2 }]),

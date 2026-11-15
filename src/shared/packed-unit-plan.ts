@@ -144,7 +144,8 @@ export function paidPackedUnitPlan(quote: any): PackedUnitPlan | undefined {
 export function selectPackedUnit(
   plan: PackedUnitPlan,
   orderItems: any[],
-  selected: { id: string; quantity: number }[]
+  selected: { id: string; quantity: number }[],
+  optionId = ""
 ) {
   if (selected.length !== 1 || Number(selected[0].quantity) !== 1)
     throw Error(
@@ -166,7 +167,7 @@ export function selectPackedUnit(
   return {
     ...unit,
     id: createHash("sha256")
-      .update(key + ":" + ordinal)
+      .update(JSON.stringify([optionId, key, ordinal]))
       .digest("hex"),
     ordinal,
   }
@@ -188,7 +189,10 @@ export function remainingPackedUnits(order: any) {
     const quote = method.data?.shiprocket_quote
     const plan = paidPackedUnitPlan(quote)
     if (!plan) continue
-    const assigned = orderShipmentAllocation(order, method.shipping_option_id, []) || order.items || []
+    const assigned =
+      orderShipmentAllocation(order, method.shipping_option_id, []) ||
+      order.items ||
+      []
     for (const unit of plan.units) {
       const lines = assigned
         .filter((line: any) => shipmentLineKey(line) === unit.key)
@@ -208,7 +212,9 @@ export function remainingPackedUnits(order: any) {
         for (let n = 0; n < remaining; n++, ordinal++)
           jobs.push({
             id: createHash("sha256")
-              .update(unit.key + ":" + ordinal)
+              .update(
+                JSON.stringify([method.shipping_option_id, unit.key, ordinal])
+              )
               .digest("hex"),
             title: line.title || line.variant_sku || "Product",
             shipping_option_id: method.shipping_option_id,

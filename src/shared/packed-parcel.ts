@@ -63,33 +63,3 @@ export function parcelRevision(value: unknown): string {
     parcelItemsKey(parcel.items),
   ])
 }
-export function selectedItemWeight(
-  items: any[],
-  quantities: Record<string, string | number>
-): { weight_grams?: number; missing_ids: string[] } {
-  let weight = 0
-  const missing: string[] = []
-  for (const [id, raw] of Object.entries(quantities)) {
-    const quantity = Number(raw)
-    if (quantity === 0) continue
-    const item = items.find((row) => row.id === id),
-      unit = Number(item?.variant?.weight ?? item?.variant?.product?.weight)
-    if (
-      !Number.isSafeInteger(quantity) ||
-      quantity < 0 ||
-      !Number.isFinite(unit) ||
-      unit <= 0
-    ) {
-      missing.push(id)
-      continue
-    }
-    weight += unit * quantity
-  }
-  return {
-    weight_grams:
-      missing.length || !Number.isFinite(weight) || weight <= 0
-        ? undefined
-        : weight,
-    missing_ids: missing,
-  }
-}
