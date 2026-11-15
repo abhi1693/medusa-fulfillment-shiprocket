@@ -2,6 +2,10 @@ import { indiaStateName } from "./india-state"
 import { MedusaError } from "@medusajs/framework/utils"
 import { createHash } from "node:crypto"
 import { moneyPaise } from "./order-money"
+import { parcelWeightSource } from "./parcel-weight"
+
+export const SHIPROCKET_BUYER_DETAILS_ACCESS_MESSAGE =
+  "Shiprocket is not returning buyer details. Set Buyer's Details Access to Allowed for this API user in Shiprocket Settings > API, then retry this same order."
 export type ExistingOrderBinding = {
   order_id: number
   shipment_id: number
@@ -159,9 +163,16 @@ export function reviewExistingOrder(
     const detail = shipmentDetail.data ?? shipmentDetail,
       address = detail.shipping_address,
       customer = detail.customer_details
-    const matchingDetail =
+    const linkedDetail =
       Number(detail.id) === binding.shipment_id &&
-      Number(detail.order_id) === binding.order_id &&
+      Number(detail.order_id) === binding.order_id
+    if (
+      linkedDetail &&
+      ["not authorized", "not authorised"].includes(text(customer?.phone))
+    )
+      warnings.push("buyer_details_access_denied")
+    const matchingDetail =
+      linkedDetail &&
       text(
         [customer?.first_name, customer?.last_name].filter(Boolean).join(" ")
       ) ===
@@ -367,11 +378,14 @@ export function reviewExistingOrder(
       "parcel." + field
     )
   }
-  check(
-    Number.isFinite(Number(shipment?.weight)) &&
-      Math.abs(Number(shipment.weight) - expected.weight) < 0.000001,
-    "parcel.weight"
+  const weightSource = parcelWeightSource(
+    shipment?.weight,
+    remote?.others?.weight,
+    expected.weight
   )
+  check(weightSource !== null, "parcel.weight")
+  if (weightSource === "original_two_decimal_projection")
+    warnings.push("parcel.weight_original_projection")
   const digest = createHash("sha256")
     .update(
       JSON.stringify({
@@ -422,9 +436,11 @@ export function requireExistingOrderReview(
   if (!review.ready)
     throw new MedusaError(
       MedusaError.Types.INVALID_DATA,
-      "Existing Shiprocket order does not match: " +
-        review.issues.join(", ") +
-        ". Repair and verify it before resuming; no replacement shipment was created."
+      review.warnings.includes("buyer_details_access_denied")
+        ? SHIPROCKET_BUYER_DETAILS_ACCESS_MESSAGE
+        : "Existing Shiprocket order does not match: " +
+            review.issues.join(", ") +
+            ". Repair and verify it before resuming; no replacement shipment was created."
     )
   if (!digest || review.digest !== digest)
     throw new MedusaError(

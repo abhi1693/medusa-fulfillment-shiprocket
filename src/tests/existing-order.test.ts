@@ -3,6 +3,7 @@ import assert from "node:assert/strict"
 import {
   reviewExistingOrder,
   requireExistingOrderReview,
+  SHIPROCKET_BUYER_DETAILS_ACCESS_MESSAGE,
   validateExistingBinding,
 } from "../shared/existing-order"
 import {
@@ -317,4 +318,90 @@ test("same-address inference requires an explicit supported flag and matching na
       false
     )
   }
+})
+
+function packedReviewFixture() {
+  const wanted = { ...expected, shipping_is_billing: true, weight: 0.163 }
+  const remote = sameAddressRemoteFixture(wanted, binding)
+  remote.others.weight = "0.163"
+  remote.shipments.weight = 0.16
+  const detail = shipmentDetailFixture(wanted, binding)
+  return {
+    wanted,
+    remote,
+    detail,
+    inspect: () =>
+      reviewExistingOrder(
+        remote,
+        wanted,
+        "123",
+        binding,
+        "order_fixture",
+        2,
+        detail
+      ),
+  }
+}
+
+test("original declared parcel weight corroborates rounded shipment weight alongside verified same-address billing", () => {
+  const f = packedReviewFixture()
+  const result = f.inspect()
+  assert.equal(result.ready, true, result.issues.join(","))
+  assert(result.warnings.includes("billing.same_as_shipping"))
+  assert(result.warnings.includes("parcel.weight_original_projection"))
+  requireExistingOrderReview(result, result.digest)
+  f.remote.others.weight = 0.16300000000000003
+  f.remote.shipments.weight = 0.16000000000000003
+  assert.equal(f.inspect().ready, true)
+})
+
+test("original parcel corroboration never accepts contradictory or missing weight evidence", () => {
+  for (const [original, shipment] of [
+    [undefined, 0.16],
+    [null, 0.16],
+    [0.164, 0.16],
+    [0.163001, 0.16],
+    [0.16, 0.163],
+    [0.163, 0.161],
+    [0.163, 0.17],
+  ]) {
+    const f = packedReviewFixture()
+    f.remote.others.weight = original
+    f.remote.shipments.weight = shipment
+    const result = f.inspect()
+    assert.equal(result.ready, false)
+    assert(result.issues.includes("parcel.weight"))
+    assert(!result.warnings.includes("parcel.weight_original_projection"))
+  }
+})
+
+test("known shipment buyer-data denial remains blocked with actionable API-user permission guidance", () => {
+  const f = packedReviewFixture()
+  for (const field of ["first_name", "last_name", "phone"])
+    f.detail.customer_details[field] = "Not Authorized"
+  for (const field of ["address", "address_2"])
+    f.detail.shipping_address[field] = "Not Authorized"
+  const result = f.inspect()
+  assert.equal(result.ready, false)
+  assert(result.issues.includes("recipient.phone_unverifiable"))
+  assert(result.warnings.includes("buyer_details_access_denied"))
+  assert.throws(
+    () => requireExistingOrderReview(result, result.digest),
+    (error: any) => {
+      assert.match(error.message, /Buyer's Details Access.*Allowed/)
+      assert(error.message.includes(SHIPROCKET_BUYER_DETAILS_ACCESS_MESSAGE))
+      return true
+    }
+  )
+  assert(!JSON.stringify(result).includes(f.wanted.shipping_phone))
+})
+
+test("foreign shipment details cannot establish a buyer-data permission diagnosis", () => {
+  const f = packedReviewFixture()
+  f.detail.customer_details.phone = "Not Authorized"
+  f.detail.order_id = 999
+  const result = f.inspect()
+  assert.equal(result.ready, false)
+  assert(result.issues.includes("recipient.phone_unverifiable"))
+  assert(!result.warnings.includes("buyer_details_access_denied"))
 })

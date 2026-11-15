@@ -47,6 +47,7 @@ Environment configuration:
 
 - `SHIPROCKET_MODE=test|live` (default `test`) selects the endpoint internally. Test-only Origin/Referer headers never go to live mode.
 - `SHIPROCKET_EMAIL` and `SHIPROCKET_PASSWORD`: API credentials. Login generates and caches the bearer token; no static API-token environment setting is required.
+- In Shiprocket **Settings → API**, enable **Buyer's Details Access → Allowed** for this API user as well as its required module permissions. Without buyer access, shipment GETs can return HTTP 200 with `Not Authorized` contact/address values. Existing-shipment verification remains blocked and explains the setting to change. Reauthenticate/restart the consuming backend after changing permissions, then retry the same native order; missing buyer details are never accepted as a match. See the official [API-user setup instructions](https://apidocs.shiprocket.in/?version=latest).
 - `SHIPROCKET_WEBHOOK_TOKEN`: independent inbound webhook secret, at least 32 characters. Configure the same value on the Shiprocket account; do not confuse it with the generated API bearer.
 - `SHIPROCKET_API_TIMEOUT_MS` (default 15000), `SHIPROCKET_WEBHOOK_PAYLOAD_RETENTION_DAYS` (default 30).
 
@@ -79,6 +80,8 @@ The Admin courier widget lists current eligible alternatives in the customer's p
 Medusa v2 amounts are already INR major units. The provider preserves paise, sends tax-inclusive item prices, explicit discounts and shipping, and gross goods `sub_total`; the observed carrier arithmetic subtracts `total_discount` and adds `shipping_charges`. Cumulative allocation preserves partial-fulfillment totals. The generic provider retains exact-rate validation; consuming stores can override `validateFulfillmentQuote` for an explicit shipping-budget policy while retaining courier/category validation.
 
 Stable seller references and signed existing-order bindings support read-only review and reuse. A carrier timeout or AWB failure retains the remote draft for review, without replacement creation, automatic cancellation or pickup. The consuming app must coordinate durable reservations and the native idempotent workflow. No merchant-facing orphan-shipment recovery API is packaged here; Recovery coordination must be provided by the consuming application.
+
+Existing-shipment weight verification accepts Shiprocket's two-decimal shipment projection only when the order's original `others.weight` independently matches the expected declared weight and rounds to that projection (observed 0.163 kg → 0.16 kg). Missing or contradictory original evidence still blocks a rounded match. Exact legacy shipment weights retain the existing tiny floating-point tolerance. Other parcel, recipient, financial and remote-identity checks remain mandatory; native measurements and carrier quote inputs are unchanged.
 
 ## Webhooks, security and limits
 

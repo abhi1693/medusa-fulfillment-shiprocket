@@ -1,5 +1,6 @@
 import {
   reviewExistingOrder,
+  SHIPROCKET_BUYER_DETAILS_ACCESS_MESSAGE,
   type ExistingOrderBinding,
 } from "./existing-order"
 import { CourierQuoteError } from "../providers/shiprocket/utils/courier-policy"
@@ -176,8 +177,10 @@ export async function recoverFulfillmentAttempt(
     )
     if (!review.ready)
       return invalid(
-        "The previous shipment does not match this fulfillment: " +
-          review.issues.join(", ")
+        review.warnings.includes("buyer_details_access_denied")
+          ? SHIPROCKET_BUYER_DETAILS_ACCESS_MESSAGE
+          : "The previous shipment does not match this fulfillment: " +
+              review.issues.join(", ")
       )
     active.push({ binding, review })
   }

@@ -4,7 +4,12 @@ import {
   recoverFulfillmentAttempt,
   retryReference,
 } from "../shared/fulfillment-recovery"
-import { remoteFixture, shipmentDetailFixture } from "./fixtures/existing-order"
+import { SHIPROCKET_BUYER_DETAILS_ACCESS_MESSAGE } from "../shared/existing-order"
+import {
+  remoteFixture,
+  sameAddressRemoteFixture,
+  shipmentDetailFixture,
+} from "./fixtures/existing-order"
 const expected = {
   order_id: "medusa_" + "a".repeat(40),
   shipping_customer_name: "Fixture",
@@ -310,4 +315,63 @@ test("cancellation readback must preserve an unbooked shipment identity", async 
       /not confirmed/
     )
   }
+})
+
+test("recovery reuses the verified booked parcel with original declared weight despite a rounded readback", async () => {
+  const f = fixture()
+  const wanted = { ...expected, shipping_is_billing: true, weight: 0.163 }
+  f.remotes[0] = sameAddressRemoteFixture(wanted, {
+    order_id: 100,
+    shipment_id: 42,
+    merchant_reference: expected.order_id,
+  })
+  const remote = f.remotes[0]
+  remote.others.weight = "0.163"
+  remote.shipments.weight = 0.16
+  remote.status = "AWB ASSIGNED"
+  remote.shipments.status = "AWB ASSIGNED"
+  remote.shipments.awb = "verified_awb"
+  remote.shipments.courier_company_id = 8
+  const result = await recoverFulfillmentAttempt(f.api, {
+    ...input(),
+    order_data: wanted,
+  })
+  assert.equal(result.resume?.order_id, 100)
+  assert.equal(result.resume?.shipment_id, 42)
+  assert.deepEqual(result.cancelled_order_ids, [])
+  assert(!f.calls.some((call) => call.method === "POST"))
+})
+
+test("buyer-data permissions block recovery with actionable guidance before cancellation or creation", async () => {
+  const f = fixture()
+  const wanted = { ...expected, shipping_is_billing: true, weight: 0.163 }
+  f.remotes[0] = sameAddressRemoteFixture(wanted, {
+    order_id: 100,
+    shipment_id: 42,
+    merchant_reference: expected.order_id,
+  })
+  f.remotes[0].others.weight = "0.163"
+  f.remotes[0].shipments.weight = 0.16
+  const get = f.api.get
+  f.api.get = async (path) => {
+    const response = await get(path)
+    if (path.startsWith("/shipments/")) {
+      const detail = (response as any).data.data
+      for (const field of ["first_name", "last_name", "phone"])
+        detail.customer_details[field] = "Not Authorized"
+      for (const field of ["address", "address_2"])
+        detail.shipping_address[field] = "Not Authorized"
+    }
+    return response
+  }
+  await assert.rejects(
+    recoverFulfillmentAttempt(f.api, { ...input(), order_data: wanted }),
+    (error: any) => {
+      assert.match(error.message, /Buyer's Details Access.*Allowed/)
+      assert(error.message.includes(SHIPROCKET_BUYER_DETAILS_ACCESS_MESSAGE))
+      return true
+    }
+  )
+  assert(f.calls.some((call) => call.path === "/shipments/42"))
+  assert(!f.calls.some((call) => call.method === "POST"))
 })
