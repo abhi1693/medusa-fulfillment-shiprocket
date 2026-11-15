@@ -1,3 +1,4 @@
+import { errorHandler } from "@medusajs/framework/http"
 import test from "node:test"
 import assert from "node:assert/strict"
 import {
@@ -6,6 +7,29 @@ import {
   shipmentLineKey,
 } from "../shared/cart-shipment-plan"
 import { orderShipmentAllocation } from "../shared/order-shipment-allocation"
+// Exercise the public native HTTP boundary used by the Admin fulfillment form.
+const validationResponse = (message: RegExp) => (error: unknown) => {
+  let statusCode = 0
+  let body: any
+  errorHandler()(
+    error,
+    { scope: { resolve: () => ({ info() {}, error() {} }) } } as any,
+    {
+      status(code: number) {
+        statusCode = code
+        return this
+      },
+      json(value: any) {
+        body = value
+      },
+    } as any,
+    () => {}
+  )
+  assert.equal(statusCode, 400)
+  assert.equal(body.type, "invalid_data")
+  assert.match(body.message, message)
+  return true
+}
 const option = (id: string, location: string) => ({
   id,
   shipping_profile_id: "profile",
@@ -205,7 +229,7 @@ test("persisted allocations bind warehouse quantities and bill each shipment's f
       orderShipmentAllocation(order, "warehouse", [
         { id: "order_line", quantity: 2 },
       ]),
-    /exceed/
+    validationResponse(/exceed.*Deselect items assigned to other warehouses/)
   )
   const amounts = shiprocketOrderMoney(
     financialSnapshot({ ...order, items: office }, methods[0], [
@@ -233,6 +257,6 @@ test("persisted allocations bind warehouse quantities and bill each shipment's f
         "office",
         []
       ),
-    /incomplete/
+    validationResponse(/incomplete/)
   )
 })

@@ -1,3 +1,4 @@
+import { MedusaError } from "@medusajs/framework/utils"
 import { shipmentLineKey } from "./cart-shipment-plan"
 import { signedCourierClaim } from "./quote-integrity"
 import { moneyPaise, allocateMoney } from "./order-money"
@@ -30,7 +31,10 @@ export function orderShipmentAllocation(
     new Set(groupIds).size !== groupIds.length ||
     allocation.groups.some((g: string) => !groupIds.includes(g))
   )
-    throw Error("The order has an incomplete shipment allocation")
+    throw new MedusaError(
+      MedusaError.Types.INVALID_DATA,
+      "The order has an incomplete shipment allocation"
+    )
   const orderLines = (order.items || []).filter(
     (line: Row) => line.requires_shipping !== false
   )
@@ -60,7 +64,10 @@ export function orderShipmentAllocation(
       entries.reduce((sum: number, e: Row) => sum + Number(e.quantity), 0) !==
       ordered
     )
-      throw Error("Shipment quantities no longer match the native order")
+      throw new MedusaError(
+        MedusaError.Types.INVALID_DATA,
+        "Shipment quantities no longer match the native order"
+      )
     let cursor = 0
     for (const entry of entries) {
       let start = cursor,
@@ -93,7 +100,10 @@ export function orderShipmentAllocation(
     }
   }
   if (!assigned.length)
-    throw Error("No native items match the saved shipment allocation")
+    throw new MedusaError(
+      MedusaError.Types.INVALID_DATA,
+      "No native items match the saved shipment allocation"
+    )
   for (const item of selected) {
     const line = assigned.find((i) => i.line.id === item.id)
     if (
@@ -102,8 +112,9 @@ export function orderShipmentAllocation(
       item.quantity <= 0 ||
       item.quantity > line.quantity - line.fulfilled
     )
-      throw Error(
-        "Fulfillment items exceed this warehouse's saved shipment allocation"
+      throw new MedusaError(
+        MedusaError.Types.INVALID_DATA,
+        "Fulfillment items exceed this warehouse's saved shipment allocation. Deselect items assigned to other warehouses or reduce the quantity, then retry."
       )
   }
   const portion = (
