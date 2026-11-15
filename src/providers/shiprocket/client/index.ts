@@ -475,13 +475,33 @@ export default class ShiprocketClient {
     const orderDate = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 
     // Physical units come from commercial order quantities, not inventory BOM components.
-    const commercial = financials?.selected_items || items.map((item: any) => ({ id: item.line_item_id, quantity: Number(item.quantity) }))
+    const commercial =
+      financials?.selected_items ||
+      items.map((item: any) => ({
+        id: item.line_item_id,
+        quantity: Number(item.quantity),
+      }))
     for (const item of commercial) {
       const orderItem = orderItemMap.get(item.id)
-      if (!orderItem) throw new MedusaError(MedusaError.Types.INVALID_DATA, "Order item missing from package")
-      const m = getLineItemDimensions(orderItem.variant, itemMeasurements?.[item.id])
-      if (!measuredParcel && ![m.weightKg, m.length, m.width, m.height].every((v) => Number.isFinite(v) && v > 0))
-        throw new MedusaError(MedusaError.Types.INVALID_DATA, "Complete native packed weight and dimensions before shipping")
+      if (!orderItem)
+        throw new MedusaError(
+          MedusaError.Types.INVALID_DATA,
+          "Order item missing from package"
+        )
+      const m = getLineItemDimensions(
+        orderItem.variant,
+        itemMeasurements?.[item.id]
+      )
+      if (
+        !measuredParcel &&
+        ![m.weightKg, m.length, m.width, m.height].every(
+          (v) => Number.isFinite(v) && v > 0
+        )
+      )
+        throw new MedusaError(
+          MedusaError.Types.INVALID_DATA,
+          "Complete native packed weight and dimensions before shipping"
+        )
       totalUnits += Number(item.quantity)
       totalWeight = m.weightKg
       totalLength = m.length

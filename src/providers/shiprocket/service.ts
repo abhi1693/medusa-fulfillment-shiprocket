@@ -185,7 +185,10 @@ class ShipRocketFulfillmentProviderService extends AbstractFulfillmentProviderSe
           is_calculated_price_tax_inclusive: true,
         }
       }
-      const { params, choices } = await quotePackedUnits(trustedContext, (input) => this.client.quotes(input))
+      const { params, choices } = await quotePackedUnits(
+        trustedContext,
+        (input) => this.client.quotes(input)
+      )
       const quote = [...choices].sort(
         (a, b) =>
           (courierPolicy(this.options_).selection === "highest_rating"
@@ -272,17 +275,26 @@ class ShipRocketFulfillmentProviderService extends AbstractFulfillmentProviderSe
         await this.client.createDocuments(externalData)
 
       // Only include label if it was successfully generated
-      const labelsEntry = externalData.tracking_number ? [{
-        tracking_number: externalData.tracking_number,
-        tracking_url: externalData.tracking_url || "",
-        label_url: label || "",
-      }] : []
+      const labelsEntry = externalData.tracking_number
+        ? [
+            {
+              tracking_number: externalData.tracking_number,
+              tracking_url: externalData.tracking_url || "",
+              label_url: label || "",
+            },
+          ]
+        : []
 
       return {
         data: {
           ...((fulfillment as object) || {}),
           ...externalData,
-          ...(context.package_id ? { shiprocket_package_id: context.package_id, shiprocket_packed_measurements: context.parcel } : {}),
+          ...(context.package_id
+            ? {
+                shiprocket_package_id: context.package_id,
+                shiprocket_packed_measurements: context.parcel,
+              }
+            : {}),
         },
         labels: labelsEntry,
       }
@@ -514,7 +526,6 @@ class ShipRocketFulfillmentProviderService extends AbstractFulfillmentProviderSe
         data: {
           ...((fulfillment as object) || {}),
           ...externalData,
-
         },
         labels: labelsEntry,
       }

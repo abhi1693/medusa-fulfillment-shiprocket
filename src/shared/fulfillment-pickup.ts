@@ -204,7 +204,9 @@ export async function prepareFulfillmentPickup(
     )
   }
   const plan = paidPackedUnitPlan(quote)
-  const unit = plan ? selectPackedUnit(plan, order.items || [], input.items || []) : undefined
+  const unit = plan
+    ? selectPackedUnit(plan, allocatedLines || order.items || [], input.items || [])
+    : undefined
   const override = order.metadata?.shiprocket_fulfillment_couriers?.[optionId]
   let courier = unit?.courier || quote
   if (override && !unit) {
@@ -233,10 +235,14 @@ export async function prepareFulfillmentPickup(
       pickup,
       courier,
       attempt_id: input.additional_data?.shiprocket_attempt_id,
-      parcel: unit ? { ...unit.measurements, items: input.items } : input.items?.length
-        ? packedParcelForItems(order.metadata, optionId, input.items)
-        : undefined,
-      item_measurements: unit ? { [input.items![0].id]: unit.measurements } : shiprocketItemMeasurements(order.items || []),
+      parcel: unit
+        ? { ...unit.measurements, items: input.items }
+        : input.items?.length
+          ? packedParcelForItems(order.metadata, optionId, input.items)
+          : undefined,
+      item_measurements: unit
+        ? { [input.items![0].id]: unit.measurements }
+        : shiprocketItemMeasurements(order.items || []),
       package_id: unit?.id,
       resume,
       recovery_reference: recoveryReference,
