@@ -42,7 +42,8 @@ export async function prepareFulfillmentPickup(
     items?: { id: string; quantity: number }[]
   },
   lookup?: (id: string) => Promise<any>,
-  resume?: ExistingOrderBinding
+  resume?: ExistingOrderBinding,
+  recoveryReference?: string
 ) {
   const query = container.resolve(ContainerRegistrationKeys.QUERY)
   const { data: orders } = await query.graph({
@@ -234,6 +235,7 @@ export async function prepareFulfillmentPickup(
         : undefined,
       item_measurements: shiprocketItemMeasurements(order.items || []),
       resume,
+      recovery_reference: recoveryReference,
       billing_address: order.billing_address,
       financials: financialSnapshot(
         allocatedLines ? { ...order, items: allocatedLines } : order,
@@ -273,6 +275,7 @@ export function readFulfillmentContext(
   parcel?: PackedParcel
   financials?: FulfillmentFinancials
   resume?: ExistingOrderBinding
+  recovery_reference?: string
   billing_address?: Record<string, any>
 } {
   try {
@@ -304,6 +307,7 @@ export function readFulfillmentContext(
       parcel: claim.parcel,
       financials: claim.financials,
       resume: claim.resume,
+      recovery_reference: claim.recovery_reference,
       billing_address: claim.billing_address,
       item_measurements:
         claim.item_measurements &&

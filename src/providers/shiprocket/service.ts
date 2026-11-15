@@ -259,7 +259,8 @@ class ShipRocketFulfillmentProviderService extends AbstractFulfillmentProviderSe
           ),
         () => markFulfillmentRemoteAttempt(context.attempt_id),
         context.financials,
-        context.resume
+        context.resume,
+        context.recovery_reference
       )
 
       this.logger_.info(

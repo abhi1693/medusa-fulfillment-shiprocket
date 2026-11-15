@@ -1,0 +1,285 @@
+import test from "node:test"
+import assert from "node:assert/strict"
+import {
+  recoverFulfillmentAttempt,
+  retryReference,
+} from "../shared/fulfillment-recovery"
+import { remoteFixture, shipmentDetailFixture } from "./fixtures/existing-order"
+const expected = {
+  order_id: "medusa_" + "a".repeat(40),
+  shipping_customer_name: "Fixture",
+  shipping_last_name: "Person",
+  shipping_address: "Test Street",
+  shipping_address_2: "",
+  shipping_city: "Delhi",
+  shipping_state: "Delhi",
+  shipping_pincode: "110077",
+  shipping_country: "in",
+  shipping_email: "fixture@example.test",
+  shipping_phone: "9876543210",
+  billing_customer_name: "Fixture",
+  billing_last_name: "Person",
+  billing_address: "Test Street",
+  billing_address_2: "",
+  billing_city: "Delhi",
+  billing_state: "Delhi",
+  billing_pincode: "110077",
+  billing_country: "in",
+  billing_email: "fixture@example.test",
+  billing_phone: "9876543210",
+  sub_total: 100,
+  total_discount: 0,
+  shipping_charges: 50,
+  giftwrap_charges: 0,
+  transaction_charges: 0,
+  order_items: [
+    { sku: "fixture", units: 1, selling_price: 100, discount: 0, tax: 0 },
+  ],
+  length: 10,
+  breadth: 10,
+  height: 10,
+  weight: 0.5,
+}
+const input = () => ({
+  native_order_id: "order_fixture",
+  order_data: structuredClone(expected),
+  pickup_id: "123",
+  courier_id: 8,
+  protected_order_ids: [] as number[],
+})
+function fixture(count = 1) {
+  const remotes = Array.from({ length: count }, (_, i) =>
+    remoteFixture(expected, {
+      order_id: 100 + i,
+      shipment_id: 42 + i,
+      merchant_reference: retryReference(expected.order_id, i),
+    })
+  )
+  const calls: { method: string; path: string; body?: any }[] = []
+  let cancellation = "CANCELED"
+  const api = {
+    get: async (path: string) => {
+      calls.push({ method: "GET", path })
+      if (path === "/orders")
+        return {
+          data: {
+            data: remotes.map((r) => ({
+              id: r.id,
+              channel_order_id: r.channel_order_id,
+            })),
+            meta: { pagination: { total_pages: 1 } },
+          },
+        }
+      if (path.startsWith("/shipments/")) {
+        const r = remotes.find(
+          (r) => String(r.shipments.id) === path.split("/").pop()
+        )!
+        return {
+          data: {
+            data: shipmentDetailFixture(expected, {
+              order_id: r.id,
+              shipment_id: r.shipments.id,
+            }),
+          },
+        }
+      }
+      const remote = remotes.find((r) => String(r.id) === path.split("/").pop())
+      return { data: { data: structuredClone(remote) } }
+    },
+    post: async (path: string, body: any) => {
+      calls.push({ method: "POST", path, body })
+      for (const id of body.ids)
+        remotes.find((r) => r.id === id)!.status = cancellation
+      return { data: {} }
+    },
+  }
+  return {
+    api,
+    remotes,
+    calls,
+    setCancellation: (s: string) => {
+      cancellation = s
+    },
+  }
+}
+test("no old attempt uses the original deterministic reference and never creates in the recovery step", async () => {
+  const f = fixture(0),
+    result = await recoverFulfillmentAttempt(f.api, input())
+  assert.equal(result.reference, expected.order_id)
+  assert.equal(result.verified_attempts, 0)
+  assert(!f.calls.some((c) => c.method === "POST"))
+})
+test("cancels a verified draft and confirms cancellation before returning a fresh scoped reference", async () => {
+  const f = fixture()
+  let observed = 0
+  const result = await recoverFulfillmentAttempt(
+    f.api,
+    input(),
+    () => observed++
+  )
+  assert.deepEqual(result.cancelled_order_ids, [100])
+  assert.equal(result.reference, retryReference(expected.order_id, 1))
+  assert(observed > 0)
+  assert.deepEqual(
+    f.calls.filter((c) => c.method === "POST").map((c) => c.path),
+    ["/orders/cancel"]
+  )
+  assert.equal(f.calls[f.calls.length - 1]?.path, "/orders/show/100")
+})
+test("retry after lost cancellation response continues from already-cancelled remote history", async () => {
+  const f = fixture(2)
+  f.remotes[0].status = "CANCELED"
+  f.remotes[1].status = "CANCELLED"
+  const result = await recoverFulfillmentAttempt(f.api, input())
+  assert.equal(result.reference, retryReference(expected.order_id, 2))
+  assert.equal(result.verified_attempts, 2)
+  assert(!f.calls.some((c) => c.method === "POST"))
+})
+test("an existing verified AWB is reused rather than cancelled or purchased twice", async () => {
+  const f = fixture()
+  f.remotes[0].status = "AWB ASSIGNED"
+  f.remotes[0].shipments.status = "AWB ASSIGNED"
+  f.remotes[0].shipments.awb = "verified_awb"
+  f.remotes[0].shipments.courier_company_id = 8
+  const result = await recoverFulfillmentAttempt(f.api, input())
+  assert.equal(result.resume?.order_id, 100)
+  assert.match(result.resume?.review_digest || "", /^[a-f0-9]{64}$/)
+  assert(!f.calls.some((c) => c.method === "POST"))
+})
+test("no replacement on pending cancellation, declined cancellation or network failure", async () => {
+  for (const kind of ["pending", "declined", "network"]) {
+    const f = fixture()
+    f.setCancellation("CANCELLATION REQUESTED")
+    if (kind !== "pending")
+      f.api.post = async () => {
+        throw Error(kind)
+      }
+    await assert.rejects(
+      recoverFulfillmentAttempt(f.api, input()),
+      kind === "pending" ? /not confirmed/ : new RegExp(kind)
+    )
+    assert(!f.calls.some((c) => c.path.includes("create")))
+  }
+  const f = fixture()
+  f.remotes[0].status = "CANCELLATION REQUESTED"
+  await assert.rejects(
+    recoverFulfillmentAttempt(f.api, input()),
+    /cancellation is pending/
+  )
+})
+test("does not cancel shipped, registered, financially mismatched or wrong-warehouse attempts", async () => {
+  for (const kind of [
+    "shipped",
+    "registered",
+    "amount",
+    "pickup",
+    "items",
+    "identity",
+  ]) {
+    const f = fixture(),
+      i = input()
+    if (kind === "shipped") f.remotes[0].status = "SHIPPED"
+    if (kind === "registered") i.protected_order_ids = [100]
+    if (kind === "amount") f.remotes[0].total = 999
+    if (kind === "pickup") f.remotes[0].pickup_location_id = 999
+    if (kind === "items") f.remotes[0].products[0].quantity = 2
+    if (kind === "identity") f.remotes[0].id = 0
+    await assert.rejects(recoverFulfillmentAttempt(f.api, i))
+    assert(!f.calls.some((c) => c.method === "POST"))
+  }
+})
+test("verifies all candidates before any cancellation and refuses multiple active booked attempts", async () => {
+  const f = fixture(2)
+  f.remotes[1].customer_pincode = "999999"
+  await assert.rejects(recoverFulfillmentAttempt(f.api, input()))
+  assert(!f.calls.some((c) => c.method === "POST"))
+  const g = fixture(2)
+  g.remotes[0].shipments.awb = "awb"
+  g.remotes[0].shipments.courier_company_id = 8
+  await assert.rejects(
+    recoverFulfillmentAttempt(g.api, input()),
+    /Multiple active/
+  )
+  assert(!g.calls.some((c) => c.method === "POST"))
+})
+test("ignores unrelated global latest orders and validates masked identity using shipment details", async () => {
+  const f = fixture()
+  f.remotes[0].customer_phone = "98xxxxxx10"
+  f.remotes.push({
+    ...structuredClone(f.remotes[0]),
+    id: 999,
+    channel_order_id: "unrelated-newest-order",
+  })
+  const result = await recoverFulfillmentAttempt(f.api, input())
+  assert.deepEqual(result.cancelled_order_ids, [100])
+  assert(!f.calls.some((c) => c.path === "/orders/show/999"))
+})
+test("legacy timestamps still belong to the same native order and must pass full comparison", async () => {
+  const f = fixture()
+  f.remotes[0].channel_order_id = "order_fixture-1794263026"
+  const result = await recoverFulfillmentAttempt(f.api, input())
+  assert.equal(result.reference, retryReference(expected.order_id, 1))
+})
+test("malformed, incomplete, changed and ambiguous histories fail closed", async () => {
+  const f = fixture()
+  f.api.get = async () => ({ data: { data: null } }) as any
+  await assert.rejects(
+    recoverFulfillmentAttempt(f.api, input()),
+    /history could not/
+  )
+  const g = fixture()
+  g.api.get = async () =>
+    ({ data: { data: [], meta: { pagination: { total_pages: 21 } } } }) as any
+  await assert.rejects(
+    recoverFulfillmentAttempt(g.api, input()),
+    /history is incomplete/
+  )
+  const h = fixture(2)
+  h.remotes[1].id = 100
+  await assert.rejects(recoverFulfillmentAttempt(h.api, input()), /ambiguous/)
+  const j = fixture()
+  j.remotes[0].shipments = []
+  await assert.rejects(
+    recoverFulfillmentAttempt(j.api, input()),
+    /cannot be identified/
+  )
+})
+test("retry references stay within Shiprocket's 50-character limit", () => {
+  assert.equal(retryReference(expected.order_id, 99999999).length, 50)
+  for (const n of [-1, 0.5, 100000000])
+    assert.throws(() => retryReference(expected.order_id, n))
+})
+
+test("a newly journaled order needs no account-wide shipment scan", async () => {
+  const f = fixture(0)
+  const result = await recoverFulfillmentAttempt(f.api, {
+    ...input(),
+    no_previous_attempt: true,
+  })
+  assert.equal(result.reference, expected.order_id)
+  assert.equal(f.calls.length, 0)
+})
+test("a saved reference narrows inspection and remains stable if a create response was lost", async () => {
+  const f = fixture(2),
+    hint = retryReference(expected.order_id, 1)
+  const result = await recoverFulfillmentAttempt(f.api, {
+    ...input(),
+    reference_hint: hint,
+  })
+  assert.deepEqual(result.cancelled_order_ids, [101])
+  assert.equal(result.reference, retryReference(expected.order_id, 2))
+  assert.equal(f.remotes[0].status, "NEW")
+  const g = fixture(0)
+  const retry = await recoverFulfillmentAttempt(g.api, {
+    ...input(),
+    reference_hint: hint,
+  })
+  assert.equal(retry.reference, hint)
+  await assert.rejects(
+    recoverFulfillmentAttempt(g.api, {
+      ...input(),
+      reference_hint: "other-order",
+    }),
+    /does not belong/
+  )
+})

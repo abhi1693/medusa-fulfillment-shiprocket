@@ -1,4 +1,8 @@
 import {
+  recoverFulfillmentAttempt,
+  retryReference,
+} from "../../../shared/fulfillment-recovery"
+import {
   validateExistingBinding,
   reviewExistingOrder,
   requireExistingOrderReview,
@@ -641,6 +645,27 @@ export default class ShiprocketClient {
     )
   }
 
+  async recoverFailedFulfillment(
+    args: Parameters<ShiprocketClient["prepareFulfillment"]>,
+    protectedOrderIds: number[],
+    beforeWrite?: () => void,
+    history?: { reference_hint?: string; no_previous_attempt?: boolean }
+  ) {
+    const prepared = await this.prepareFulfillment(...args)
+    return recoverFulfillmentAttempt(
+      await this.getSharedAxios(),
+      {
+        native_order_id: args[2].id,
+        order_data: prepared.orderData,
+        pickup_id: args[3].external_id,
+        courier_id: prepared.selectedQuote.courier_company_id,
+        protected_order_ids: protectedOrderIds,
+        ...history,
+      },
+      beforeWrite
+    )
+  }
+
   async create(
     fulfillment: any,
     items: any[],
@@ -652,7 +677,8 @@ export default class ShiprocketClient {
     validateRate?: (quote: CourierQuote) => void,
     beforeCreate?: () => void,
     financials?: FulfillmentFinancials,
-    resume?: ExistingOrderBinding
+    resume?: ExistingOrderBinding,
+    recoveryReference?: string
   ): Promise<ShiprocketCreateOrderResponse> {
     let creationRequested = false
     let merchantReference = resume?.merchant_reference || ""
@@ -668,6 +694,23 @@ export default class ShiprocketClient {
         validateRate,
         financials
       )
+      if (recoveryReference) {
+        const base = orderData.order_id
+        const suffix = recoveryReference.slice(
+          (base.slice(0, 40) + "_r").length
+        )
+        if (
+          recoveryReference !== base &&
+          recoveryReference !== resume?.merchant_reference &&
+          (!/^[1-9][0-9]{0,7}$/.test(suffix) ||
+            recoveryReference !== retryReference(base, Number(suffix)))
+        )
+          throw new MedusaError(
+            MedusaError.Types.INVALID_DATA,
+            "Shipment retry reference does not belong to this fulfillment"
+          )
+        orderData.order_id = recoveryReference
+      }
       merchantReference ||= orderData.order_id
       let existingReview: ReturnType<typeof reviewExistingOrder> | undefined
       if (resume) {
