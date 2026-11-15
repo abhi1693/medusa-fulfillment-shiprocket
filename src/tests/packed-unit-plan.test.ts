@@ -103,10 +103,13 @@ test("signed plan rejects tampering and catalog changes, freezes paid measuremen
   const result = await quotePackedUnits(c, async () => [quote("surface")])
   const signed = signCourierQuote(result.choices[0], result.params, c)
   const verified = readCourierQuote(signed, c, courierPolicy()).quote
+  const reduced = { ...c, items: c.items.map((item) => ({ ...item, variant: { weight: 680 } })) }
+  assert.equal(readCourierQuote(signed, reduced, courierPolicy()).quote.amount, signed.amount)
   const plan = paidPackedUnitPlan(verified)!
   assert.equal(plan.units[0].quantity, 2)
   const changed = structuredClone(c)
   changed.items[0].variant.weight = 900
+  ;(changed as any).shiprocket_item_measurements = {a: {weight_grams:900,length_mm:206,width_mm:206,height_mm:46}}
   assert.throws(
     () => readCourierQuote(signed, changed, courierPolicy()),
     /expired or changed/

@@ -115,7 +115,9 @@ export function verifyCourierQuote(
         ))
   )
     return fail()
-  if (claim.quote.parcel_plan) {
+  // Native validateFulfillmentData has a reduced product projection. The
+  // pricing workflow hooks supply the authoritative full measurement map.
+  if (claim.quote.parcel_plan && context.shiprocket_item_measurements) {
     const actual = packedUnitInputs(context).map(
       ({ key, variant_id, quantity, measurements }) => ({
         key,
