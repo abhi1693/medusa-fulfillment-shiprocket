@@ -113,7 +113,7 @@ function sanitizeScans(scans: unknown): ShiprocketWebhookScan[] {
 /**
  * Shiprocket Webhook Endpoint
  * 
- * URL: POST /store/shiprocket/hook
+ * URL: POST /hooks/fulfillment/delivery-updates
  * 
  * Receives real-time shipment status updates from Shiprocket.
  * Token is validated via x-api-key header against SHIPROCKET_WEBHOOK_TOKEN env var.
@@ -157,6 +157,25 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
 
         // Parse webhook payload
         const payload = req.body as ShiprocketWebhookPayload
+
+        // Shiprocket also emits order cancellations before courier/AWB assignment.
+        // Acknowledge those authenticated notifications without inventing an AWB
+        // or mutating shipment tracking; retries cannot make them trackable.
+        const cancelled = (value: unknown) => typeof value === "string" &&
+            ["CANCELED", "CANCELLED"].includes(value.trim().toUpperCase())
+        if (payload?.awb === "" && cancelled(payload.current_status) &&
+            cancelled(payload.shipment_status) &&
+            Number.isSafeInteger(payload.sr_order_id) && payload.sr_order_id > 0 &&
+            !payload.awb_assigned_date && !payload.pickup_scheduled_date) {
+            logger.info("Shiprocket webhook ignored " + JSON.stringify({
+                reason: "cancelled_before_awb", sr_order_id: payload.sr_order_id,
+            }))
+            return ok(res, {
+                message: "Order cancelled before AWB assignment; no tracking update required",
+                ignored: true,
+                reason: "cancelled_before_awb",
+            })
+        }
 
         if (!payload?.awb || !isValidAwb(payload.awb)) {
             logger.warn("Shiprocket webhook: Missing or invalid AWB in payload")
