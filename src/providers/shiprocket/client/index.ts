@@ -729,6 +729,35 @@ export default class ShiprocketClient {
     )
   }
 
+  /** Read-only cancellation inspection. Never revalidates rates or cancels an active shipment. */
+  async inspectCancelledFulfillment(
+    args: Parameters<ShiprocketClient["prepareFulfillment"]>,
+    protectedOrderIds: number[],
+    referenceHint: string
+  ) {
+    const financials = args[8]
+    if (!financials)
+      throw new CourierQuoteError("The saved native financial allocation is required to verify shipment cancellation")
+    return recoverFulfillmentAttempt(
+      await this.getSharedAxios(),
+      {
+        native_order_id: args[2].id,
+        order_data: {
+          order_id: stableFulfillmentReference(
+            args[2].id,
+            args[0].shipping_option_id || "",
+            financials
+          ),
+        },
+        pickup_id: args[3].external_id,
+        courier_id: 0,
+        protected_order_ids: protectedOrderIds,
+        reference_hint: referenceHint,
+        allow_cancel: false,
+      }
+    )
+  }
+
   async recoverFailedFulfillment(
     args: Parameters<ShiprocketClient["prepareFulfillment"]>,
     protectedOrderIds: number[],

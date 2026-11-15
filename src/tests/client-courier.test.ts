@@ -1,4 +1,5 @@
 import { remoteFixture } from "./fixtures/existing-order"
+import { financialSnapshot, stableFulfillmentReference } from "../shared/order-money"
 import test from "node:test"
 import assert from "node:assert/strict"
 import axios from "axios"
@@ -667,4 +668,29 @@ test("overall quote diagnostics preserve unknown-service eligibility while check
   const record = JSON.parse(messages.find(m => m.startsWith("Shiprocket rate decision "))!.slice("Shiprocket rate decision ".length))
   assert.equal(record.candidates[0].status, "selected")
   assert.deepEqual(record.candidates[0].reasons, [])
+})
+
+test("read-only cancellation verification does not revalidate an unavailable previous courier or change pickup", async (t) => {
+  const f = setup(t)
+  f.setRows([])
+  const financials = financialSnapshot(order, order.shipping_methods[0], [{ id: "item_fixture", quantity: 1 }])
+  const reference = stableFulfillmentReference(order.id, "option", financials)
+  f.setOrderPages([{ data: [{ id: 100, channel_order_id: reference }], meta: { pagination: { total_pages: 1 } } }])
+  f.setExisting({ id: 100, channel_order_id: reference, status: "CANCELED", status_code: 5, shipments: { id: 42, awb: "" } })
+  const result = await f.client.inspectCancelledFulfillment([
+    { shipping_option_id: "option" }, items, order, pickup,
+    { courier_company_id: 2, amount: 50 }, undefined, undefined,
+    () => { throw Error("Previous courier/rate must not be checked") }, financials,
+  ], [], reference)
+  assert.equal(result.base_reference, reference)
+  assert.deepEqual(result.cancelled_order_ids, [100])
+  assert(f.calls.every((call) => ["/auth/login", "/orders", "/orders/show/100"].includes(call.url)))
+})
+
+test("read-only cancellation verification requires a trusted native financial allocation before carrier access", async (t) => {
+  const f = setup(t)
+  await assert.rejects(f.client.inspectCancelledFulfillment([
+    { shipping_option_id: "option" }, items, order, pickup,
+  ], [], "medusa_saved"), /financial allocation/)
+  assert.equal(f.calls.length, 0)
 })

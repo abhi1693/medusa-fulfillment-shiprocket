@@ -4,17 +4,16 @@ import {
   type ExistingOrderBinding,
 } from "./existing-order"
 import { CourierQuoteError } from "../providers/shiprocket/utils/courier-policy"
+import {
+  isCancelledOrderStatus,
+  isPendingOrderCancellation,
+} from "./order-cancellation"
 
 const invalid = (message: string): never => {
   throw new CourierQuoteError(message)
 }
-const status = (value: unknown) =>
-  String(value ?? "")
-    .toUpperCase()
-    .replace(/_/g, " ")
-    .trim()
 const cancelled = (order: any) =>
-  ["CANCELED", "CANCELLED"].includes(status(order.status))
+  isCancelledOrderStatus(order.status, order.status_code)
 export function retryReference(base: string, generation: number) {
   if (
     !Number.isSafeInteger(generation) ||
@@ -43,6 +42,7 @@ export async function recoverFulfillmentAttempt(
     protected_order_ids: number[]
     reference_hint?: string
     no_previous_attempt?: boolean
+    allow_cancel?: boolean
   },
   beforeWrite?: () => void
 ): Promise<{
@@ -50,9 +50,15 @@ export async function recoverFulfillmentAttempt(
   resume?: ExistingOrderBinding
   cancelled_order_ids: number[]
   verified_attempts: number
+  base_reference?: string
 }> {
   const base = input.order_data.order_id,
     found: any[] = []
+  const readOnly = input.allow_cancel === false
+  if (readOnly && (!input.reference_hint || input.no_previous_attempt))
+    return invalid(
+      "A recorded shipment reference is required to verify its cancellation"
+    )
   if (input.no_previous_attempt)
     return { reference: base, cancelled_order_ids: [], verified_attempts: 0 }
   const hint = input.reference_hint
@@ -104,6 +110,10 @@ export async function recoverFulfillmentAttempt(
     return invalid(
       "Shiprocket shipment history is incomplete; no replacement was created"
     )
+  if (readOnly && !found.length)
+    return invalid(
+      "The recorded shipment was not found. Its cancellation must be verified before choosing other items"
+    )
   if (hint && !found.length)
     return { reference: hint, cancelled_order_ids: [], verified_attempts: 0 }
   const ids = new Set<number>()
@@ -112,10 +122,11 @@ export async function recoverFulfillmentAttempt(
     review: ReturnType<typeof reviewExistingOrder>
   }[] = []
   let highest = -1
+  const confirmedCancelledIds: number[] = []
   for (const row of found) {
     if (!Number.isSafeInteger(row.id) || row.id <= 0 || ids.has(row.id))
       return invalid("Shiprocket returned ambiguous shipment attempts")
-    beforeWrite?.()
+    if (!readOnly) beforeWrite?.()
     ids.add(row.id)
     highest = Math.max(highest, row.generation)
     const response = await api.get(`/orders/show/${row.id}`),
@@ -131,7 +142,7 @@ export async function recoverFulfillmentAttempt(
       return invalid(
         "This shipment is already linked to a native fulfillment. Use the existing fulfillment instead of creating another"
       )
-    if (status(remote.status) === "CANCELLATION REQUESTED")
+    if (isPendingOrderCancellation(remote.status, remote.status_code))
       return invalid(
         "Shiprocket cancellation is pending. Retry this same order later; no replacement was created"
       )
@@ -147,12 +158,36 @@ export async function recoverFulfillmentAttempt(
     )
       return invalid("The previous shipment cannot be identified safely")
     if (cancelled(remote)) {
+      const previousBooking =
+        readOnly &&
+        [
+          "awb_assign_date",
+          "awb_assigned_date",
+          "pickup_scheduled_date",
+          "pickup_generated_date",
+        ].some((field) => {
+          const value = shipments[0][field]
+          return (
+            value !== undefined &&
+            value !== null &&
+            !(typeof value === "string" && !value.trim())
+          )
+        })
+      if (previousBooking)
+        return invalid(
+          "The cancelled shipment has booking or pickup history. Review its carrier cost/refund before creating another"
+        )
       if (shipments[0].awb || shipments[0].awb_code)
         return invalid(
           "The cancelled shipment had an AWB. Confirm its carrier cost/refund before creating another"
         )
+      confirmedCancelledIds.push(row.id)
       continue
     }
+    if (readOnly)
+      return invalid(
+        "The previous shipment is still active. Retry its original items or confirm its cancellation before choosing other items"
+      )
     const binding = {
       order_id: row.id,
       shipment_id: Number(shipments[0].id),
@@ -184,6 +219,13 @@ export async function recoverFulfillmentAttempt(
       )
     active.push({ binding, review })
   }
+  if (readOnly)
+    return {
+      reference: retryReference(base, highest + 1),
+      base_reference: base,
+      cancelled_order_ids: confirmedCancelledIds,
+      verified_attempts: found.length,
+    }
   const booked = active.filter((attempt) => attempt.review.awb)
   if (booked.length) {
     if (active.length !== 1)

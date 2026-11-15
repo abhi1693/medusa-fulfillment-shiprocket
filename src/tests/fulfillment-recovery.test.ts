@@ -375,3 +375,57 @@ test("buyer-data permissions block recovery with actionable guidance before canc
   assert(f.calls.some((call) => call.path === "/shipments/42"))
   assert(!f.calls.some((call) => call.method === "POST"))
 })
+
+test("read-only cancellation verification returns the original base and next safe reference without any write callback", async () => {
+  for (const [status, status_code] of [["CANCELED", 5], ["Canceled before Dispatched", 54], [5, 5]]) {
+    const f = fixture()
+    f.remotes[0].status = status
+    f.remotes[0].status_code = status_code
+    const result = await recoverFulfillmentAttempt(f.api, {
+      ...input(), reference_hint: expected.order_id, allow_cancel: false,
+    }, () => { throw Error("Read-only verification invoked a write callback") })
+    assert.equal(result.base_reference, expected.order_id)
+    assert.equal(result.reference, retryReference(expected.order_id, 1))
+    assert.equal(result.verified_attempts, 1)
+    assert.deepEqual(result.cancelled_order_ids, [100])
+    assert(!f.calls.some((call) => call.method === "POST"))
+  }
+})
+
+test("read-only cancellation verification cannot turn active, booked, missing or contradictory records into permission to switch", async () => {
+  for (const kind of ["active", "booked", "pending", "linked", "missing", "identity", "contradiction"]) {
+    const f = fixture(kind === "missing" ? 0 : 1)
+    const i = { ...input(), reference_hint: expected.order_id, allow_cancel: false }
+    if (f.remotes.length) f.remotes[0].status = "CANCELED"
+    if (kind === "active") f.remotes[0].status = "NEW"
+    if (kind === "booked") f.remotes[0].shipments.awb = "PREVIOUSLY-BOOKED"
+    if (kind === "pending") { f.remotes[0].status = 18; f.remotes[0].status_code = 18 }
+    if (kind === "linked") i.protected_order_ids = [100]
+    if (kind === "identity") f.remotes[0].channel_order_id = "foreign"
+    if (kind === "contradiction") f.remotes[0].status_code = 1
+    await assert.rejects(recoverFulfillmentAttempt(f.api, i), kind)
+    assert(!f.calls.some((call) => call.method === "POST"), kind)
+  }
+})
+
+test("read-only cancellation verification requires the exact saved reference and rejects a no-history shortcut", async () => {
+  for (const patch of [{ reference_hint: undefined }, { no_previous_attempt: true }, { reference_hint: "foreign" }]) {
+    const f = fixture()
+    await assert.rejects(recoverFulfillmentAttempt(f.api, {
+      ...input(), reference_hint: expected.order_id, allow_cancel: false, ...patch,
+    }))
+    assert.equal(f.calls.length, 0)
+  }
+})
+
+test("read-only cancellation handoff rejects historical booking or pickup markers even after the AWB was cleared", async () => {
+  for (const marker of ["awb_assign_date", "awb_assigned_date", "pickup_scheduled_date", "pickup_generated_date"]) {
+    const f = fixture()
+    f.remotes[0].status = "CANCELED"
+    f.remotes[0].shipments[marker] = "2026-11-16 12:00:00"
+    await assert.rejects(recoverFulfillmentAttempt(f.api, {
+      ...input(), reference_hint: expected.order_id, allow_cancel: false,
+    }), /booking or pickup history/)
+    assert(!f.calls.some((call) => call.method === "POST"))
+  }
+})

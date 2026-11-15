@@ -2,6 +2,12 @@ import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import crypto from "crypto"
 import { fail, isValidAwb, ok } from "../../../../shared/http"
 import { RateLimiter, getClientIdentifier } from "../../../../shared/rate-limiter"
+import {
+    isCancelledOrderStatus,
+    isCancelledShipmentStatus,
+    SHIPROCKET_ORDER_CANCELLED_EVENT,
+    type ShiprocketOrderCancelledEvent,
+} from "../../../../shared/order-cancellation"
 
 // Module identifier - must match what's registered in medusa-config.ts
 const SHIPROCKET_TRACKING_MODULE = "shiprocketTrackingModuleService"
@@ -72,6 +78,21 @@ function cleanupProcessedWebhookKeys() {
 
 function getIdempotencyKey(payload: ShiprocketWebhookPayload): string {
     return `${payload.awb}:${payload.current_status_id || payload.current_status}:${payload.shipment_status_id || ""}:${payload.current_timestamp || "na"}`
+}
+
+async function emitWebhookEvent(scope: MedusaRequest["scope"], name: string, data: object): Promise<boolean> {
+    let eventBus: any
+    let isV2 = true
+    try {
+        eventBus = scope.resolve("event_bus")
+    } catch {
+        isV2 = false
+        try { eventBus = scope.resolve("eventBusService") } catch { return false }
+    }
+    if (typeof eventBus?.emit !== "function") return false
+    if (isV2) await eventBus.emit({ name, data })
+    else await eventBus.emit(name, data)
+    return true
 }
 
 function parseShiprocketDate(dateStr?: string): Date | undefined {
@@ -159,21 +180,44 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
         const payload = req.body as ShiprocketWebhookPayload
 
         // Shiprocket also emits order cancellations before courier/AWB assignment.
-        // Acknowledge those authenticated notifications without inventing an AWB
-        // or mutating shipment tracking; retries cannot make them trackable.
-        const cancelled = (value: unknown) => typeof value === "string" &&
-            ["CANCELED", "CANCELLED"].includes(value.trim().toUpperCase())
-        if (payload?.awb === "" && cancelled(payload.current_status) &&
-            cancelled(payload.shipment_status) &&
+        // Publish an advisory refresh hint without inventing an AWB or changing
+        // native recovery state. Retries must verify cancellation through GET.
+        if (payload?.awb === "" && payload.current_status && payload.shipment_status &&
+            isCancelledOrderStatus(payload.current_status, payload.current_status_id) &&
+            isCancelledShipmentStatus(payload.shipment_status, payload.shipment_status_id) &&
             Number.isSafeInteger(payload.sr_order_id) && payload.sr_order_id > 0 &&
             !payload.awb_assigned_date && !payload.pickup_scheduled_date) {
-            logger.info("Shiprocket webhook ignored " + JSON.stringify({
+            cleanupProcessedWebhookKeys()
+            const idemKey = `cancelled:${payload.sr_order_id}:${getIdempotencyKey(payload)}`
+            if (processedWebhookKeys.has(idemKey))
+                return ok(res, {
+                    message: "Order cancellation already processed",
+                    processed: true,
+                    duplicate: true,
+                    reason: "cancelled_before_awb",
+                    sr_order_id: payload.sr_order_id,
+                })
+            const event: ShiprocketOrderCancelledEvent = {
+                sr_order_id: payload.sr_order_id,
+                order_id: typeof payload.order_id === "string" ? payload.order_id.slice(0, 128) : undefined,
+                before_awb: true,
+                current_status: String(payload.current_status).slice(0, 64),
+                current_status_id: payload.current_status_id === undefined ? undefined : Number(payload.current_status_id),
+                shipment_status: String(payload.shipment_status).slice(0, 64),
+                shipment_status_id: payload.shipment_status_id === undefined ? undefined : Number(payload.shipment_status_id),
+                current_timestamp: typeof payload.current_timestamp === "string" ? payload.current_timestamp.slice(0, 64) : undefined,
+            }
+            if (!(await emitWebhookEvent(req.scope, SHIPROCKET_ORDER_CANCELLED_EVENT, event)))
+                throw Error("Shiprocket webhook event bus is unavailable")
+            processedWebhookKeys.set(idemKey, Date.now() + WEBHOOK_IDEMPOTENCY_TTL_MS)
+            logger.info("Shiprocket order cancellation processed " + JSON.stringify({
                 reason: "cancelled_before_awb", sr_order_id: payload.sr_order_id,
             }))
             return ok(res, {
-                message: "Order cancelled before AWB assignment; no tracking update required",
-                ignored: true,
+                message: "Order cancellation processed; retry this same order to verify its current shipment state",
+                processed: true,
                 reason: "cancelled_before_awb",
+                sr_order_id: payload.sr_order_id,
             })
         }
 
@@ -264,41 +308,13 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
 
         // Emit event for subscribers to handle
         try {
-            // Try v2 resolution first
-            let eventBus: any = undefined;
-            let isV2 = false;
-            try {
-                eventBus = req.scope.resolve("event_bus");
-                isV2 = true;
-            } catch (e) {
-                // Fallback to v1
-                try {
-                    eventBus = req.scope.resolve("eventBusService");
-                } catch (e2) {
-                    logger.warn("Shiprocket webhook: Event bus not found, skipping event emission");
-                }
-            }
-
-            if (eventBus && (eventBus as any).emit) {
-                if (isV2) {
-                    await (eventBus as any).emit({
-                        name: "shiprocket.tracking.updated",
-                        data: {
-                            awb: payload.awb,
-                            tracking_id: tracking.id,
-                            current_status: payload.current_status,
-                            shipment_status_id: payload.shipment_status_id,
-                        }
-                    })
-                } else {
-                    await (eventBus as any).emit("shiprocket.tracking.updated", {
-                        awb: payload.awb,
-                        tracking_id: tracking.id,
-                        current_status: payload.current_status,
-                        shipment_status_id: payload.shipment_status_id,
-                    })
-                }
-            }
+            const emitted = await emitWebhookEvent(req.scope, "shiprocket.tracking.updated", {
+                awb: payload.awb,
+                tracking_id: tracking.id,
+                current_status: payload.current_status,
+                shipment_status_id: payload.shipment_status_id,
+            })
+            if (!emitted) logger.warn("Shiprocket webhook: Event bus not found, skipping event emission")
         } catch (eventErr) {
             logger.warn(`Shiprocket webhook: Failed to emit event: ${(eventErr as Error).message}`)
         }
