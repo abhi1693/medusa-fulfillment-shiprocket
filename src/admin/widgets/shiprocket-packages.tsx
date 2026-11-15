@@ -18,12 +18,12 @@ type Plan = {
   }[]
   legacy_review_required: boolean
 }
-function Packages({ id }: { id: string }) {
+function Packages({ id, revision }: { id: string; revision: string }) {
   const client = useQueryClient()
   const [busy, setBusy] = useState(false),
     [message, setMessage] = useState("")
   const plan = useQuery({
-    queryKey: ["shiprocket-packages", id],
+    queryKey: ["shiprocket-packages", id, revision],
     queryFn: () =>
       sdk.client.fetch<Plan>(`/admin/shiprocket-fulfillment/${id}/packages`),
     retry: false,
@@ -119,6 +119,14 @@ export default function PackageWidget({
     )
   )
     return null
-  return <Packages id={data.id} />
+  // Native fulfillment changes can leave the order version unchanged.
+  const revision = JSON.stringify([
+    data.version,
+    data.updated_at,
+    (data.fulfillments || [])
+      .map((fulfillment) => [fulfillment.id, fulfillment.canceled_at])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+  ])
+  return <Packages id={data.id} revision={revision} />
 }
 export const config = defineWidgetConfig({ zone: "order.details.after" })
