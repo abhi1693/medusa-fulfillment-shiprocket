@@ -283,3 +283,31 @@ test("a saved reference narrows inspection and remains stable if a create respon
     /does not belong/
   )
 })
+
+test("cancelled booked shipments never imply refunded shipping budget", async () => {
+  const f = fixture()
+  f.remotes[0].status = "CANCELED"
+  f.remotes[0].shipments.awb = "previously-booked"
+  await assert.rejects(
+    recoverFulfillmentAttempt(f.api, input()),
+    /cost\/refund/
+  )
+  assert(!f.calls.some((c) => c.method === "POST"))
+})
+test("cancellation readback must preserve an unbooked shipment identity", async () => {
+  for (const change of ["awb", "identity", "missing"]) {
+    const f = fixture(),
+      post = f.api.post
+    f.api.post = async (path, body) => {
+      const result = await post(path, body)
+      if (change === "awb") f.remotes[0].shipments.awb = "unexpected-awb"
+      else if (change === "identity") f.remotes[0].shipments.id = 999
+      else f.remotes[0].shipments = null as any
+      return result
+    }
+    await assert.rejects(
+      recoverFulfillmentAttempt(f.api, input()),
+      /not confirmed/
+    )
+  }
+})

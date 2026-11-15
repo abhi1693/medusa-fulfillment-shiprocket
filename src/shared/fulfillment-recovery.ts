@@ -130,7 +130,6 @@ export async function recoverFulfillmentAttempt(
       return invalid(
         "This shipment is already linked to a native fulfillment. Use the existing fulfillment instead of creating another"
       )
-    if (cancelled(remote)) continue
     if (status(remote.status) === "CANCELLATION REQUESTED")
       return invalid(
         "Shiprocket cancellation is pending. Retry this same order later; no replacement was created"
@@ -146,6 +145,13 @@ export async function recoverFulfillmentAttempt(
       Number(shipments[0].id) <= 0
     )
       return invalid("The previous shipment cannot be identified safely")
+    if (cancelled(remote)) {
+      if (shipments[0].awb || shipments[0].awb_code)
+        return invalid(
+          "The cancelled shipment had an AWB. Confirm its carrier cost/refund before creating another"
+        )
+      continue
+    }
     const binding = {
       order_id: row.id,
       shipment_id: Number(shipments[0].id),
@@ -194,11 +200,18 @@ export async function recoverFulfillmentAttempt(
     beforeWrite?.()
     await api.post("/orders/cancel", { ids: [binding.order_id] })
     const result = await api.get(`/orders/show/${binding.order_id}`),
-      remote = result.data?.data ?? result.data
+      remote = result.data?.data ?? result.data,
+      shipments = Array.isArray(remote?.shipments)
+        ? remote.shipments
+        : [remote?.shipments]
     if (
       Number(remote?.id) !== binding.order_id ||
       remote.channel_order_id !== binding.merchant_reference ||
-      !cancelled(remote)
+      !cancelled(remote) ||
+      shipments.length !== 1 ||
+      Number(shipments[0]?.id) !== binding.shipment_id ||
+      shipments[0]?.awb ||
+      shipments[0]?.awb_code
     )
       return invalid(
         "Shiprocket cancellation is not confirmed yet. Retry this same order later; no replacement was created"
