@@ -1,3 +1,6 @@
+import { signedCourierClaim } from "../../shared/quote-integrity"
+import { MedusaError } from "@medusajs/framework/utils"
+import { cartShipmentPlan } from "../../shared/cart-shipment-plan"
 import {
   shiprocketCartFingerprint,
   shiprocketPaymentPriceLocked,
@@ -7,6 +10,7 @@ import type { MedusaContainer } from "@medusajs/framework/types"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { StepResponse } from "@medusajs/framework/workflows-sdk"
 import {
+  addShippingMethodToCartWorkflow,
   calculateShippingOptionsPricesWorkflow,
   listShippingOptionsForCartWithPricingWorkflow,
 } from "@medusajs/medusa/core-flows"
@@ -34,6 +38,7 @@ async function shippingMeasurements(
       "payment_collection.payment_sessions.currency_code",
       "shipping_methods.shipping_option_id",
       "shipping_methods.amount",
+      "shipping_methods.is_tax_inclusive",
       "shipping_methods.data",
       "shipping_address.country_code",
       "shipping_address.postal_code",
@@ -52,6 +57,10 @@ async function shippingMeasurements(
     ],
   })
   return new StepResponse({
+    shiprocket_shipment_allocations: await cartShipmentPlan(
+      container,
+      input.cart_id
+    ),
     shiprocket_payment_shipping_quotes: shiprocketPaymentPriceLocked(cart || {})
       ? Object.fromEntries(
           (cart?.shipping_methods || []).map((method: any) => [
@@ -59,6 +68,7 @@ async function shippingMeasurements(
             {
               quote: method.data?.shiprocket_quote,
               amount: method.amount,
+              is_tax_inclusive: method.is_tax_inclusive,
               fingerprint: method.data?.[SHIPROCKET_CART_FINGERPRINT],
             },
           ])
@@ -74,4 +84,45 @@ calculateShippingOptionsPricesWorkflow.hooks.setCalculatedShippingPricingContext
 // Native shipping-method selection and cart refresh both call this workflow.
 listShippingOptionsForCartWithPricingWorkflow.hooks.setCalculatedShippingPricingContext(
   shippingMeasurements
+)
+
+// Validate the complete server-derived allocation before native method writes.
+addShippingMethodToCartWorkflow.hooks.validate(
+  async ({ input }, { container }) => {
+    const plan = await cartShipmentPlan(container, input.cart_id)
+    const selected = (input.options || []).map((option) => ({
+      id: option.id,
+      quote: option.data?.shiprocket_quote as any,
+    }))
+    for (const option of selected) {
+      const expected = plan[option.id]
+      if (!expected) continue
+      const claim = signedCourierClaim(option.quote)
+      if (
+        !expected.cart_items.length ||
+        !claim ||
+        JSON.stringify(claim.quote.shipment_allocation) !==
+          JSON.stringify(expected)
+      )
+        throw new MedusaError(
+          MedusaError.Types.INVALID_DATA,
+          "Shipment allocation changed. Review delivery availability."
+        )
+      const groups = selected
+        .map(
+          (other) => signedCourierClaim(other.quote)?.quote?.shipment_allocation
+        )
+        .filter((allocation) => allocation?.plan_id === expected.plan_id)
+        .map((allocation) => allocation.group_id)
+      if (
+        groups.length !== expected.groups.length ||
+        new Set(groups).size !== groups.length ||
+        expected.groups.some((group) => !groups.includes(group))
+      )
+        throw new MedusaError(
+          MedusaError.Types.INVALID_DATA,
+          "Select the combined delivery charge for all required warehouses."
+        )
+    }
+  }
 )

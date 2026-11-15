@@ -9,7 +9,10 @@ export function quoteSignature(body: string): string {
     )
   return createHmac("sha256", key).update(body).digest("base64url")
 }
-export function signedCourierClaim(value: unknown): any | undefined {
+export function signedCourierClaim(
+  value: unknown,
+  allowExpired = false
+): any | undefined {
   try {
     const quote = value as any
     if (
@@ -32,7 +35,7 @@ export function signedCourierClaim(value: unknown): any | undefined {
       !claim.option ||
       !claim.origin ||
       !Number.isFinite(claim.expires) ||
-      claim.expires <= Date.now() ||
+      (!allowExpired && claim.expires <= Date.now()) ||
       claim.expires > Date.now() + SHIPROCKET_QUOTE_TTL_MS ||
       claim.courier_company_id !== quote.courier_company_id ||
       claim.amount !== quote.amount ||

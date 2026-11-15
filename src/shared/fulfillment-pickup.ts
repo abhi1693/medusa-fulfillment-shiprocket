@@ -1,3 +1,4 @@
+import { orderShipmentAllocation } from "./order-shipment-allocation"
 import type { ExistingOrderBinding } from "./existing-order"
 import { financialSnapshot, type FulfillmentFinancials } from "./order-money"
 import { packedParcelForItems, type PackedParcel } from "./packed-parcel"
@@ -61,9 +62,16 @@ export async function prepareFulfillmentPickup(
       "fulfillments.id",
       "fulfillments.shipping_option_id",
       "fulfillments.data",
+      "fulfillments.canceled_at",
+      "fulfillments.items.line_item_id",
+      "fulfillments.items.quantity",
       "metadata",
       "billing_address.*",
       "items.id",
+      "items.variant_id",
+      "items.unit_price",
+      "items.is_tax_inclusive",
+      "items.metadata",
       "items.quantity",
       "items.requires_shipping",
       "items.original_total",
@@ -110,7 +118,13 @@ export async function prepareFulfillmentPickup(
   })
   const option = options.find((candidate: any) => candidate.id === optionId)
   if (!option?.provider_id?.endsWith("_shiprocket")) return undefined
+  const allocatedLines = orderShipmentAllocation(
+    order,
+    optionId,
+    input.items || []
+  )
   if (
+    !allocatedLines &&
     option.shipping_profile_id &&
     options.filter(
       (candidate: any) =>
@@ -222,7 +236,7 @@ export async function prepareFulfillmentPickup(
       resume,
       billing_address: order.billing_address,
       financials: financialSnapshot(
-        order,
+        allocatedLines ? { ...order, items: allocatedLines } : order,
         method,
         input.items || [],
         option.shipping_profile_id

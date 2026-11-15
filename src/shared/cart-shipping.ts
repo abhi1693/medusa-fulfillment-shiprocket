@@ -1,3 +1,4 @@
+import { cartShipmentPlan } from "./cart-shipment-plan"
 import { signedCourierClaim } from "./quote-integrity"
 import { createHash } from "node:crypto"
 import type {
@@ -166,6 +167,34 @@ export async function invalidateShiprocketCartQuotes(
         ids.push(method.id)
     }
   }
+  if (staleOnly) {
+    const claims = methods.map((m: any) => ({
+      method: m,
+      claim: signedCourierClaim(
+        m.data?.shiprocket_quote,
+        shiprocketPaymentPriceLocked(cart)
+      ),
+    }))
+    for (const { method, claim } of claims) {
+      const allocation = claim?.quote?.shipment_allocation
+      if (!allocation) continue
+      const siblings = claims.filter(
+        (value: any) =>
+          value.claim?.quote?.shipment_allocation?.plan_id ===
+          allocation.plan_id
+      )
+      const selected = siblings.map(
+        (value: any) => value.claim.quote.shipment_allocation.group_id
+      )
+      if (
+        !Array.isArray(allocation.groups) ||
+        selected.length !== allocation.groups.length ||
+        new Set(selected).size !== selected.length ||
+        allocation.groups.some((id: string) => !selected.includes(id))
+      )
+        ids.push(method.id)
+    }
+  }
   if (ids.length && !inspectOnly)
     await container
       .resolve<ICartModuleService>(Modules.CART)
@@ -192,6 +221,33 @@ export async function assertFreshShiprocketCartQuotes(
     true,
     true
   )
+  const {
+    data: [current],
+  } = await container.resolve(ContainerRegistrationKeys.QUERY).graph({
+    entity: "cart",
+    filters: { id: cartId },
+    fields: [
+      "id",
+      "completed_at",
+      "shipping_methods.shipping_option_id",
+      "shipping_methods.data",
+    ],
+  })
+  if (current?.completed_at) return
+  const plan = await cartShipmentPlan(container, cartId)
+  for (const method of current?.shipping_methods || []) {
+    const allocation = signedCourierClaim(method.data?.shiprocket_quote, true)
+      ?.quote?.shipment_allocation
+    const expected = plan[method.shipping_option_id]
+    if (
+      (allocation || expected) &&
+      JSON.stringify(allocation) !== JSON.stringify(expected)
+    )
+      throw new MedusaError(
+        MedusaError.Types.INVALID_DATA,
+        "Warehouse stock changed. Review the combined delivery charge."
+      )
+  }
   if (ids.length)
     throw new MedusaError(
       MedusaError.Types.INVALID_DATA,

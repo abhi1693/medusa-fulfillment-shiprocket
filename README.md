@@ -97,3 +97,9 @@ The retained document generator currently requests a manifest using `order_ids` 
 ## Order widget availability
 
 Packed parcel and delivery selection render only after the backend confirms an enabled native Shiprocket provider and an applicable order shipping option with remaining shippable items. Stale quote metadata on manual, canceled or fully fulfilled orders does not display the controls. This check reads native Medusa data only and never authenticates to the carrier. Source widget exports are provided for consuming-application tests without copying package source.
+
+## Split-origin carts
+
+When no single location can supply a shipping profile, native inventory levels determine a signed per-origin quantity allocation. Pricing uses each shipment's assigned item weight rather than quoting the entire cart twice. Consumers can combine compatible Standard/Express quotes into one customer choice and submit all constituent options together through the native array shipping-method API. The allocation requires complete coverage and is rechecked before native completion. Existing single-origin alternatives remain unchanged.
+
+The saved allocation binds each order fulfillment to its warehouse's item quantities and monetary share. Each shipment receives its own native shipping-method charge and budget. The consuming store owns rounding and the combined-price UI; its customer charge should sum the per-shipment prices after its rounding policy. No rate lookup creates a shipment or pickup. Carrier AWB and document-generation limitations described above still apply.

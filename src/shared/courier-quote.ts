@@ -38,6 +38,9 @@ export function signCourierQuote(
   const { quote_token: _token, expires_at: _expiry, ...unsigned } = quote
   const snapshot = {
     ...unsigned,
+    ...(context.shiprocket_shipment_allocation
+      ? { shipment_allocation: context.shiprocket_shipment_allocation }
+      : {}),
     origin_location_id: context.from_location.id,
     origin_location_name:
       typeof context.from_location.name === "string"
@@ -99,7 +102,16 @@ export function verifyCourierQuote(
     claim.courier_company_id !== quote.courier_company_id ||
     claim.amount !== quote.amount ||
     claim.service !== quote.service ||
-    JSON.stringify(claim.policy) !== JSON.stringify(policy)
+    JSON.stringify(claim.policy) !== JSON.stringify(policy) ||
+    (context.shiprocket_shipment_allocations?.[
+      String(context.shiprocket_quote_option_id)
+    ] &&
+      JSON.stringify(claim.quote.shipment_allocation) !==
+        JSON.stringify(
+          context.shiprocket_shipment_allocations[
+            String(context.shiprocket_quote_option_id)
+          ]
+        ))
   )
     return fail()
   return claim.params

@@ -1,3 +1,4 @@
+import { scopedShipmentContext } from "../../shared/cart-shipment-plan"
 import { markFulfillmentRemoteAttempt } from "../../shared/fulfillment-attempt"
 import { readFulfillmentContext } from "../../shared/fulfillment-pickup"
 import {
@@ -139,14 +140,17 @@ class ShipRocketFulfillmentProviderService extends AbstractFulfillmentProviderSe
     }
   > {
     try {
-      const trustedContext = {
-        ...context,
-        shiprocket_quote_option_id: _optionData.shiprocket_option_id,
-        shiprocket_quote_account_scope: pickupScope(
-          shiprocketApiUrl(this.options_.mode),
-          this.options_.email || ""
-        ),
-      } as Record<string, any>
+      const trustedContext = scopedShipmentContext(
+        {
+          ...context,
+          shiprocket_quote_option_id: _optionData.shiprocket_option_id,
+          shiprocket_quote_account_scope: pickupScope(
+            shiprocketApiUrl(this.options_.mode),
+            this.options_.email || ""
+          ),
+        },
+        _optionData.shiprocket_option_id
+      ) as Record<string, any>
       const selected = _data?.shiprocket_quote as
         Record<string, unknown> | undefined
       if (selected) {
