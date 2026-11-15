@@ -5,7 +5,11 @@ import {
   requireExistingOrderReview,
   validateExistingBinding,
 } from "../shared/existing-order"
-import { remoteFixture, shipmentDetailFixture } from "./fixtures/existing-order"
+import {
+  remoteFixture,
+  shipmentDetailFixture,
+  sameAddressRemoteFixture,
+} from "./fixtures/existing-order"
 const binding = {
   order_id: 100,
   shipment_id: 42,
@@ -157,4 +161,160 @@ test("documented shipment detail corroborates a redacted recipient but wrong ide
   detail.order_id = binding.order_id
   detail.shipping_address.address = "Different fixture"
   assert.ok(inspect().issues.includes("recipient.phone_unverifiable"))
+})
+
+test("native province codes match carrier state names, including masked shipment-detail verification", () => {
+  const wanted = {
+    ...expected,
+    shipping_state: "in-hr",
+    billing_state: "in-hr",
+  }
+  const remote = remoteFixture(wanted, binding)
+  remote.customer_state = "Haryana"
+  remote.billing_state_name = "HARYANA"
+  remote.customer_phone = "XXXXXXXXXX"
+  const detail = shipmentDetailFixture(wanted, binding)
+  detail.shipping_address.state = "Haryana"
+  const result = reviewExistingOrder(
+    remote,
+    wanted,
+    "123",
+    binding,
+    "order_fixture",
+    2,
+    detail
+  )
+  assert.equal(result.ready, true, result.issues.join(","))
+  detail.shipping_address.state = "Delhi"
+  assert.ok(
+    reviewExistingOrder(
+      remote,
+      wanted,
+      "123",
+      binding,
+      "order_fixture",
+      2,
+      detail
+    ).issues.includes("recipient.phone_unverifiable")
+  )
+})
+test("explicit original same-address flag corroborates omitted billing only after verifying the matching recipient", () => {
+  const wanted = {
+    ...expected,
+    shipping_state: "in-hr",
+    billing_state: "in-hr",
+    shipping_is_billing: true,
+  }
+  const remote = sameAddressRemoteFixture(wanted, binding),
+    detail = shipmentDetailFixture(wanted, binding)
+  remote.customer_state = "Haryana"
+  detail.shipping_address.state = "Haryana"
+  const inspect = () =>
+    reviewExistingOrder(
+      remote,
+      wanted,
+      "123",
+      binding,
+      "order_fixture",
+      2,
+      detail
+    )
+  assert.equal(inspect().ready, true, inspect().issues.join(","))
+  assert.deepEqual(inspect().warnings, ["billing.same_as_shipping"])
+  assert(!JSON.stringify(inspect()).includes(wanted.shipping_email))
+  remote.shipments.awb = "existing-awb"
+  remote.shipments.courier_company_id = 2
+  assert.equal(inspect().ready, true)
+  detail.order_id = 999
+  assert.equal(inspect().ready, false)
+})
+test("omitted billing is never inferred for different native billing details or partial contradictory remote data", () => {
+  const wanted = { ...expected, shipping_is_billing: true }
+  const remote = sameAddressRemoteFixture(wanted, binding),
+    detail = shipmentDetailFixture(wanted, binding)
+  for (const field of [
+    "billing_customer_name",
+    "billing_address",
+    "billing_address_2",
+    "billing_city",
+    "billing_state",
+    "billing_pincode",
+    "billing_country",
+    "billing_email",
+    "billing_phone",
+  ]) {
+    const result = reviewExistingOrder(
+      remote,
+      { ...wanted, [field]: "different" },
+      "123",
+      binding,
+      "order_fixture",
+      2,
+      detail
+    )
+    assert.equal(result.ready, false, field)
+    assert(!result.warnings.includes("billing.same_as_shipping"), field)
+  }
+  remote.billing_address = "Contradictory billing address"
+  assert.equal(
+    reviewExistingOrder(
+      remote,
+      wanted,
+      "123",
+      binding,
+      "order_fixture",
+      2,
+      detail
+    ).ready,
+    false
+  )
+})
+test("same-address inference requires an explicit supported flag and matching native flag", () => {
+  for (const flag of [undefined, false, "false", null]) {
+    const wanted = { ...expected, shipping_is_billing: true },
+      remote = sameAddressRemoteFixture(wanted, binding)
+    remote.others.shipping_is_billing = flag
+    assert.equal(
+      reviewExistingOrder(
+        remote,
+        wanted,
+        "123",
+        binding,
+        "order_fixture",
+        2,
+        shipmentDetailFixture(wanted, binding)
+      ).ready,
+      false
+    )
+  }
+  for (const flag of [true, 1, "1"]) {
+    const wanted = { ...expected, shipping_is_billing: true },
+      remote = sameAddressRemoteFixture(wanted, binding)
+    delete remote.others.shipping_is_billing
+    remote.shipping_is_billing = flag
+    assert.equal(
+      reviewExistingOrder(
+        remote,
+        wanted,
+        "123",
+        binding,
+        "order_fixture",
+        2,
+        shipmentDetailFixture(wanted, binding)
+      ).ready,
+      true
+    )
+    assert.equal(
+      reviewExistingOrder(
+        remote,
+        { ...wanted, shipping_is_billing: false },
+        "123",
+        binding,
+        "order_fixture",
+        2,
+        shipmentDetailFixture(wanted, binding)
+      ).ready,
+      false
+    )
+  }
 })

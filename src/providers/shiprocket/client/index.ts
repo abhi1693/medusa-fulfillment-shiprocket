@@ -1,3 +1,4 @@
+import { indiaStateName } from "../../../shared/india-state"
 import {
   recoverFulfillmentAttempt,
   retryReference,
@@ -539,7 +540,7 @@ export default class ShiprocketClient {
         "Billing Pincode"
       ),
       billing_state: requireField(
-        billing.province || shipping.province,
+        indiaStateName(billing.province || shipping.province),
         "Billing State"
       ),
       billing_country: requireField(
@@ -569,7 +570,10 @@ export default class ShiprocketClient {
         shipping.country_code || "IN",
         "Shipping Country"
       ),
-      shipping_state: requireField(shipping.province, "Shipping State"),
+      shipping_state: requireField(
+        indiaStateName(shipping.province),
+        "Shipping State"
+      ),
       shipping_email: requireField(customerEmail, "Shipping Email"),
       shipping_phone: validateAndSanitizePhone(
         requireField(shipping.phone, "Shipping Phone"),

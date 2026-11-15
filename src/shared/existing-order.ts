@@ -1,3 +1,4 @@
+import { indiaStateName } from "./india-state"
 import { MedusaError } from "@medusajs/framework/utils"
 import { createHash } from "node:crypto"
 import { moneyPaise } from "./order-money"
@@ -29,6 +30,7 @@ const country = (v: unknown) =>
   ["in", "india"].includes(text(v)) ? "in" : text(v)
 const city = (v: unknown) =>
   ["gurgaon", "gurugram"].includes(text(v)) ? "gurugram" : text(v)
+const state = (v: unknown) => text(indiaStateName(v))
 const phone = (v: unknown) =>
   String(v ?? "")
     .replace(/\D/g, "")
@@ -138,7 +140,11 @@ export function reviewExistingOrder(
       remote?.[actual],
       expected[wanted],
       "recipient." + wanted,
-      wanted === "shipping_city" ? city : text
+      wanted === "shipping_city"
+        ? city
+        : wanted === "shipping_state"
+          ? state
+          : text
     )
   compare(
     remote?.customer_country,
@@ -167,7 +173,7 @@ export function reviewExistingOrder(
       text(address?.address) === text(expected.shipping_address) &&
       text(address?.address_2) === text(expected.shipping_address_2) &&
       city(address?.city) === city(expected.shipping_city) &&
-      text(address?.state) === text(expected.shipping_state) &&
+      state(address?.state) === state(expected.shipping_state) &&
       text(address?.pincode) === text(expected.shipping_pincode) &&
       country(address?.country) === country(expected.shipping_country)
     if (matchingDetail && !redacted(customer?.phone))
@@ -182,8 +188,69 @@ export function reviewExistingOrder(
       ? "recipient.phone_unverifiable"
       : "recipient.phone"
   )
+  const originalSameAddress = remote?.others?.shipping_is_billing
+  const sameAddressFlag =
+    originalSameAddress === true ||
+    (originalSameAddress === undefined &&
+      [true, 1, "1"].includes(remote?.shipping_is_billing))
+  const billingOmitted = [
+    "billing_name",
+    "billing_address",
+    "billing_address_2",
+    "billing_city",
+    "billing_state_name",
+    "billing_pincode",
+    "billing_email",
+    "billing_phone",
+    "billing_country_name",
+  ].every((field) => !text(remote?.[field]))
+  const sameExpectedAddress =
+    expected.shipping_is_billing === true &&
+    text(
+      [expected.billing_customer_name, expected.billing_last_name]
+        .filter(Boolean)
+        .join(" ")
+    ) ===
+      text(
+        [expected.shipping_customer_name, expected.shipping_last_name]
+          .filter(Boolean)
+          .join(" ")
+      ) &&
+    ["address", "address_2", "pincode", "email"].every(
+      (field) =>
+        text(expected["billing_" + field]) ===
+        text(expected["shipping_" + field])
+    ) &&
+    city(expected.billing_city) === city(expected.shipping_city) &&
+    state(expected.billing_state) === state(expected.shipping_state) &&
+    country(expected.billing_country) === country(expected.shipping_country) &&
+    phone(expected.billing_phone) === phone(expected.shipping_phone)
+  // Shiprocket can omit all billing fields when the original request explicitly
+  // says shipping is billing, despite returning top-level shipping_is_billing=0.
+  // Infer nothing for distinct addresses, partial/contradictory data or an
+  // unverified recipient. The unchanged strict checks below still apply.
+  let billing = remote
+  if (
+    sameAddressFlag &&
+    billingOmitted &&
+    sameExpectedAddress &&
+    recipientPhoneVerified
+  ) {
+    billing = {
+      billing_name: remote.customer_name,
+      billing_address: remote.customer_address,
+      billing_address_2: remote.customer_address_2,
+      billing_city: remote.customer_city,
+      billing_state_name: remote.customer_state,
+      billing_pincode: remote.customer_pincode,
+      billing_email: remote.customer_email,
+      billing_country_name: remote.customer_country,
+      billing_phone: recipientPhone,
+    }
+    warnings.push("billing.same_as_shipping")
+  }
   compare(
-    remote?.billing_name,
+    billing?.billing_name,
     [expected.billing_customer_name, expected.billing_last_name]
       .filter(Boolean)
       .join(" "),
@@ -198,18 +265,22 @@ export function reviewExistingOrder(
     ["billing_email", "billing_email"],
   ])
     compare(
-      remote?.[actual],
+      billing?.[actual],
       expected[wanted],
       "billing." + wanted,
-      wanted === "billing_city" ? city : text
+      wanted === "billing_city"
+        ? city
+        : wanted === "billing_state"
+          ? state
+          : text
     )
   compare(
-    remote?.billing_country_name,
+    billing?.billing_country_name,
     expected.billing_country,
     "billing.country",
     country
   )
-  if (redacted(remote?.billing_phone)) {
+  if (redacted(billing?.billing_phone)) {
     if (
       recipientPhoneVerified &&
       phone(expected.billing_phone) === phone(expected.shipping_phone)
@@ -218,7 +289,7 @@ export function reviewExistingOrder(
     else check(false, "billing.phone_unverifiable")
   } else
     compare(
-      remote.billing_phone,
+      billing.billing_phone,
       expected.billing_phone,
       "billing.phone",
       phone

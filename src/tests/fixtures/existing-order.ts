@@ -84,3 +84,24 @@ export function shipmentDetailFixture(expected: any, binding: any): any {
     },
   }
 }
+
+/** Privacy projection observed from documented live order/shipment GETs. */
+export function sameAddressRemoteFixture(expected: any, binding: any): any {
+  const remote = remoteFixture(expected, binding)
+  for (const field of [
+    "billing_name",
+    "billing_address",
+    "billing_address_2",
+    "billing_city",
+    "billing_state_name",
+    "billing_pincode",
+    "billing_email",
+    "billing_phone",
+    "billing_country_name",
+  ])
+    remote[field] = ""
+  remote.shipping_is_billing = 0
+  remote.others.shipping_is_billing = true
+  remote.customer_phone = "XXXXXXXXXX"
+  return remote
+}
