@@ -1,121 +1,99 @@
+import { FulfillmentCourier } from "../components/fulfillment-courier"
 import { useShiprocketOrder } from "../hooks/use-shiprocket-order"
 import { defineWidgetConfig } from "@medusajs/admin-sdk"
 import type { DetailWidgetProps, HttpTypes } from "@medusajs/framework/types"
-import { Container, Heading, Text, Button } from "@medusajs/ui"
-import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { useState } from "react"
+import { Container, Heading, Text } from "@medusajs/ui"
+import { useQuery } from "@tanstack/react-query"
 import { sdk } from "../lib/client"
 
 type Plan = {
-  revision: string
   packages: {
     id: string
     title: string
+    shipping_option_id: string
+    location_id: string
+    courier_company_id: number
     courier_name: string
     service: string
     carrier_amount: number
+    affordable?: boolean
+    remaining_budget?: number
+    over_budget_amount?: number
     measurements: Record<string, number>
   }[]
   legacy_review_required: boolean
 }
 function Packages({ id, revision }: { id: string; revision: string }) {
-  const client = useQueryClient()
-  const [busy, setBusy] = useState(false),
-    [message, setMessage] = useState("")
   const plan = useQuery({
     queryKey: ["shiprocket-packages", id, revision],
     queryFn: () =>
       sdk.client.fetch<Plan>(`/admin/shiprocket-fulfillment/${id}/packages`),
     retry: false,
   })
-  async function dispatch() {
-    if (!plan.data || busy) return
-    setBusy(true)
-    setMessage("")
-    try {
-      const result = await sdk.client.fetch<{
-        completed: number
-        error?: string
-      }>(`/admin/shiprocket-fulfillment/${id}/packages`, {
-        method: "POST",
-        body: { revision: plan.data.revision },
-      })
-      setMessage(
-        result.error
-          ? `${result.completed} packages completed. ${result.error}`
-          : `${result.completed} packages dispatched.`
-      )
-    } catch (e: any) {
-      setMessage(
-        e.message ||
-          "Packages could not be dispatched. Try again on this order."
-      )
-    } finally {
-      setBusy(false)
-      await client.invalidateQueries()
-    }
-  }
   return (
-    <Container>
-      <Heading level="h2">Shipping packages</Heading>
+    <Container className="divide-y divide-ui-border-base p-0">
+      <div className="px-6 py-4">
+        <Heading level="h2">Shipping</Heading>
+      </div>
       {plan.isPending ? (
-        <Text>Loading packages…</Text>
+        <div className="px-6 py-4">
+          <Text size="small" className="text-ui-fg-subtle">
+            Loading shipping…
+          </Text>
+        </div>
       ) : plan.isError ? (
-        <Text role="alert">{plan.error.message}</Text>
+        <div className="px-6 py-4">
+          <Text size="small" role="alert" className="text-ui-fg-error">
+            {plan.error.message}
+          </Text>
+        </div>
       ) : (
         <>
           {plan.data.legacy_review_required && (
-            <Text>
+            <Text className="px-6 py-4" size="small">
               This order uses an earlier shipping quote. Review its existing
               shipment before fulfillment.
             </Text>
           )}
           {plan.data.packages.map((p, index) => (
-            <div key={p.id} className="border-b border-ui-border-base py-3">
-              <Text weight="plus">
-                Package {index + 1} · {p.title}
-              </Text>
-              <Text size="small">
-                {p.courier_name} · {p.service} · Carrier quote ₹
-                {Math.round(p.carrier_amount)}
-              </Text>
-              <Text size="small">
-                {Number(p.measurements.weight_grams) / 1000} kg ·{" "}
-                {Math.ceil(Number(p.measurements.length_mm) / 10)} ×{" "}
-                {Math.ceil(Number(p.measurements.width_mm) / 10)} ×{" "}
-                {Math.ceil(Number(p.measurements.height_mm) / 10)} cm
-              </Text>
+            <div key={p.id} className="px-6 py-4">
+              <FulfillmentCourier
+                orderId={id}
+                optionId={p.shipping_option_id}
+                packageId={p.id}
+                label={`Package ${index + 1}`}
+                parcelSummary={`${plan.data.packages.length > 1 ? `Package ${index + 1} · ` : ""}${p.title} · ${Number(p.measurements.weight_grams) / 1000} kg · ${Math.ceil(Number(p.measurements.length_mm) / 10)} × ${Math.ceil(Number(p.measurements.width_mm) / 10)} × ${Math.ceil(Number(p.measurements.height_mm) / 10)} cm`}
+                quote={{
+                  courier_company_id: p.courier_company_id,
+                  courier_name: p.courier_name,
+                  service: p.service,
+                  carrier_amount: p.carrier_amount,
+                  affordable: p.affordable,
+                  remaining_budget: p.remaining_budget,
+                  over_budget_amount: p.over_budget_amount,
+                  origin_location_id: p.location_id,
+                }}
+              />
             </div>
           ))}
-          <Text size="small">
-            {plan.data.packages.length
-              ? "Each package has its own tracking. The customer's combined shipping charge stays unchanged."
-              : "No packages awaiting dispatch."}
-          </Text>
-          {plan.data.packages.length > 0 && (
-            <Button
-              type="button"
-              isLoading={busy}
-              disabled={busy}
-              onClick={dispatch}
-            >
-              Dispatch packages
-            </Button>
+          {!plan.data.packages.length && (
+            <div className="px-6 py-4">
+              <Text size="small" className="text-ui-fg-subtle">
+                No packages awaiting fulfillment.
+              </Text>
+            </div>
           )}
         </>
       )}
-      {message && <Text role="status">{message}</Text>}
     </Container>
   )
 }
-export default function PackageWidget({
-  data,
-}: DetailWidgetProps<HttpTypes.AdminOrder>) {
+const PackageWidget = ({ data }: DetailWidgetProps<HttpTypes.AdminOrder>) => {
   const { applicable } = useShiprocketOrder(data)
   if (!applicable) return null
   if (
     !(data.shipping_methods || []).some(
-      (m) => (m.data as any)?.shiprocket_quote
+      (m) => (m.data as any)?.shiprocket_quote?.parcel_plan
     )
   )
     return null
@@ -129,4 +107,5 @@ export default function PackageWidget({
   ])
   return <Packages id={data.id} revision={revision} />
 }
+export default PackageWidget
 export const config = defineWidgetConfig({ zone: "order.details.after" })

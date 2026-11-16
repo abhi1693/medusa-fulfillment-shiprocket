@@ -1,3 +1,5 @@
+import { awbErrorDiagnostic, awbErrorSummary } from "../../../shared/awb-error"
+import { cancelFailedAwbOrder } from "../../../shared/failed-awb"
 import { createHash } from "node:crypto"
 import { indiaStateName } from "../../../shared/india-state"
 import {
@@ -524,7 +526,7 @@ export default class ShiprocketClient {
     if (totalUnits > 1 && !measuredParcel)
       throw new MedusaError(
         MedusaError.Types.INVALID_DATA,
-        "Dispatch one packed unit per fulfillment, or use Dispatch packages"
+        "Fulfill one packed unit at a time."
       )
     const packed = measuredParcel
       ? shiprocketQuote({
@@ -737,25 +739,24 @@ export default class ShiprocketClient {
   ) {
     const financials = args[8]
     if (!financials)
-      throw new CourierQuoteError("The saved native financial allocation is required to verify shipment cancellation")
-    return recoverFulfillmentAttempt(
-      await this.getSharedAxios(),
-      {
-        native_order_id: args[2].id,
-        order_data: {
-          order_id: stableFulfillmentReference(
-            args[2].id,
-            args[0].shipping_option_id || "",
-            financials
-          ),
-        },
-        pickup_id: args[3].external_id,
-        courier_id: 0,
-        protected_order_ids: protectedOrderIds,
-        reference_hint: referenceHint,
-        allow_cancel: false,
-      }
-    )
+      throw new CourierQuoteError(
+        "The saved native financial allocation is required to verify shipment cancellation"
+      )
+    return recoverFulfillmentAttempt(await this.getSharedAxios(), {
+      native_order_id: args[2].id,
+      order_data: {
+        order_id: stableFulfillmentReference(
+          args[2].id,
+          args[0].shipping_option_id || "",
+          financials
+        ),
+      },
+      pickup_id: args[3].external_id,
+      courier_id: 0,
+      protected_order_ids: protectedOrderIds,
+      reference_hint: referenceHint,
+      allow_cancel: false,
+    })
   }
 
   async recoverFailedFulfillment(
@@ -794,6 +795,12 @@ export default class ShiprocketClient {
     recoveryReference?: string
   ): Promise<ShiprocketCreateOrderResponse> {
     let creationRequested = false
+    let failedAwbInput: Parameters<typeof cancelFailedAwbOrder>[1] | undefined
+    let awbRequested = false
+    let awbPresent = false
+    let awbRejectionConfirmed = false
+    let awbDiagnostic: ReturnType<typeof awbErrorDiagnostic> | undefined
+    const sensitiveValues: unknown[] = [this.email, this.password, this.token]
     let merchantReference = resume?.merchant_reference || ""
     try {
       const { orderData, selectedQuote, money } = await this.prepareFulfillment(
@@ -807,6 +814,14 @@ export default class ShiprocketClient {
         validateRate,
         financials
       )
+      for (const [key, value] of Object.entries(orderData)) {
+        if (
+          /^(billing|shipping)_(customer_name|last_name|address(?:_[12])?|email|phone|alternate_phone)$/.test(
+            key
+          )
+        )
+          sensitiveValues.push(value)
+      }
       if (recoveryReference) {
         const base = orderData.order_id
         const suffix = recoveryReference.slice(
@@ -886,6 +901,26 @@ export default class ShiprocketClient {
         shipment_id: orderCreated.data.shipment_id,
         courier_id: selectedQuote.courier_company_id,
       }
+      if (
+        !resume &&
+        Number.isSafeInteger(Number(orderCreated.data.order_id)) &&
+        Number(orderCreated.data.order_id) > 0 &&
+        Number.isSafeInteger(Number(orderCreated.data.shipment_id)) &&
+        Number(orderCreated.data.shipment_id) > 0
+      ) {
+        failedAwbInput = {
+          binding: {
+            order_id: Number(orderCreated.data.order_id),
+            shipment_id: Number(orderCreated.data.shipment_id),
+            merchant_reference: merchantReference,
+          },
+          order_data: orderData,
+          native_order_id: order.id,
+          pickup_id: pickup.external_id,
+          courier_id: selectedQuote.courier_company_id,
+        }
+      }
+      awbRequested = !existingReview?.awb
       const awbCreated = existingReview?.awb
         ? {
             data: {
@@ -901,17 +936,26 @@ export default class ShiprocketClient {
         : await (
             await this.getSharedAxios()
           ).post("/courier/assign/awb", awbPayload, {
+            // Assignment can take a minute; keep other API calls on their normal timeout.
+            timeout: 90000,
             shiprocket_order_id: order.id,
           } as any)
 
       const awbStatus = awbCreated.data?.awb_assign_status
       const responseBody = awbCreated.data?.response?.data
+      awbPresent =
+        typeof responseBody?.awb_code === "string" &&
+        !!responseBody.awb_code.trim()
+      awbDiagnostic = awbErrorDiagnostic(awbCreated.data, sensitiveValues)
+      const detail = awbErrorSummary(awbDiagnostic)
       const rawReasons = [
         awbCreated.data?.message,
         awbCreated.data?.error,
         awbCreated.data?.response?.message,
         awbCreated.data?.response?.error,
+        awbCreated.data?.response?.data,
         responseBody?.awb_assign_error,
+        responseBody?.rmk,
         responseBody?.message,
         responseBody?.error,
       ]
@@ -928,6 +972,15 @@ export default class ShiprocketClient {
               : /invalid|validation/i.test(rawReasons)
                 ? "validation"
                 : "unclassified"
+      const upstreamStatus = Number(awbDiagnostic.status_code)
+      awbRejectionConfirmed =
+        (awbStatus === 0 || awbStatus === "0") &&
+        !awbPresent &&
+        !/timeout|timed\s*out|gateway|curl.*28/i.test(
+          rawReasons + " " + detail
+        ) &&
+        ![408, 425, 429].includes(upstreamStatus) &&
+        !(upstreamStatus >= 500 && upstreamStatus <= 599)
       this.logger?.info(
         "Shiprocket AWB result " +
           JSON.stringify({
@@ -943,6 +996,9 @@ export default class ShiprocketClient {
             awb_present: !!responseBody?.awb_code,
             courier_id: Number(responseBody?.courier_company_id) || undefined,
             reason,
+            error_detail: awbDiagnostic.message,
+            action_required: awbDiagnostic.action_required,
+            error_status_code: awbDiagnostic.status_code,
             assignment_error_present:
               typeof responseBody?.awb_assign_error === "string",
             keys: Object.keys(awbCreated.data || {}).filter((key) =>
@@ -961,7 +1017,7 @@ export default class ShiprocketClient {
       if (awbStatus !== 1 && awbStatus !== "1") {
         throw new MedusaError(
           MedusaError.Types.NOT_ALLOWED,
-          `Shiprocket did not assign an AWB for existing order ${orderCreated.data.order_id}, shipment ${orderCreated.data.shipment_id} (${reason}). The draft is retained for review; no replacement or pickup was created.`
+          `Shiprocket did not assign an AWB for existing order ${orderCreated.data.order_id}, shipment ${orderCreated.data.shipment_id} (${reason}).${detail ? ` Shiprocket reason: ${detail}.` : ""} The draft is retained for review; no replacement or pickup was created.`
         )
       }
 
@@ -1018,6 +1074,93 @@ export default class ShiprocketClient {
         tracking_url: `https://shiprocket.co/tracking/${encodeURIComponent(responseData.awb_code)}`,
       }
     } catch (error: any) {
+      if (awbRequested && !awbPresent) {
+        awbDiagnostic ??= awbErrorDiagnostic(
+          error?.response?.data,
+          sensitiveValues
+        )
+        this.logger?.warn(
+          "Shiprocket AWB failure " +
+            JSON.stringify({
+              order_id: order.id,
+              remote_order_id:
+                failedAwbInput?.binding.order_id ?? resume?.order_id,
+              shipment_id:
+                failedAwbInput?.binding.shipment_id ?? resume?.shipment_id,
+              http_status: error?.response?.status,
+              transport_code:
+                typeof error?.code === "string" &&
+                /^[A-Z0-9_]{1,40}$/.test(error.code)
+                  ? error.code
+                  : undefined,
+              ...awbDiagnostic,
+            })
+        )
+      }
+      const detail = awbErrorSummary(awbDiagnostic || {})
+      const diagnosticSuffix = detail ? ` Shiprocket reason: ${detail}.` : ""
+      if (
+        failedAwbInput &&
+        awbRequested &&
+        !awbPresent &&
+        !awbRejectionConfirmed
+      ) {
+        const { binding } = failedAwbInput
+        let verifiedAwb = ""
+        try {
+          const response = await this.existingRemote(binding)
+          const review = reviewExistingOrder(
+            response.body,
+            failedAwbInput.order_data,
+            failedAwbInput.pickup_id,
+            binding,
+            failedAwbInput.native_order_id,
+            failedAwbInput.courier_id,
+            response.detail
+          )
+          if (review.ready && review.awb) verifiedAwb = review.awb
+        } catch {
+          // A failed read cannot prove that the assignment did not complete.
+        }
+        throw new MedusaError(
+          MedusaError.Types.NOT_ALLOWED,
+          verifiedAwb
+            ? `Shiprocket assigned an AWB to order ${binding.order_id}, shipment ${binding.shipment_id}, despite the unconfirmed response.${diagnosticSuffix} Retry fulfillment on this same order to reuse its verified shipment; no order was cancelled or replaced.`
+            : `Shiprocket did not confirm AWB assignment for order ${binding.order_id}, shipment ${binding.shipment_id}, reference ${binding.merchant_reference}.${diagnosticSuffix} The assignment may still complete. Check this same shipment in Shiprocket before retrying; no order was cancelled or replaced.`
+        )
+      }
+      if (
+        failedAwbInput &&
+        awbRequested &&
+        !awbPresent &&
+        awbRejectionConfirmed
+      ) {
+        let outcome: Awaited<ReturnType<typeof cancelFailedAwbOrder>>
+        try {
+          outcome = await cancelFailedAwbOrder(
+            await this.getSharedAxios(),
+            failedAwbInput
+          )
+        } catch (cleanupError: any) {
+          const reason =
+            error instanceof MedusaError
+              ? error.message
+              : "Shiprocket did not confirm AWB assignment"
+          throw new MedusaError(
+            MedusaError.Types.NOT_ALLOWED,
+            `${reason}${reason.includes(detail) ? "" : diagnosticSuffix}. Cancellation could not be confirmed: ${cleanupError.message}. Reconcile this same shipment before retrying; no replacement was created.`
+          )
+        }
+        if (!outcome.cancelled)
+          throw new MedusaError(
+            MedusaError.Types.NOT_ALLOWED,
+            `Shiprocket assigned an AWB despite the failed response.${diagnosticSuffix} Retry fulfillment on this same order to reuse its verified shipment; no order was cancelled or replaced.`
+          )
+        throw new MedusaError(
+          MedusaError.Types.NOT_ALLOWED,
+          `Shiprocket AWB assignment failed.${diagnosticSuffix} Its unbooked order was cancelled and cancellation confirmed. Retry fulfillment on this same order; the next attempt will use a new reference.`
+        )
+      }
       if (
         creationRequested &&
         (!error?.response ||

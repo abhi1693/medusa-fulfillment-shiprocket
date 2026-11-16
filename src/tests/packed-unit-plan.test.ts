@@ -205,13 +205,68 @@ test("multiple packed units reach the native Admin error response with actionabl
   ])
   assert.throws(
     () =>
-      selectPackedUnit(result.choices[0].parcel_plan!, [item("a", 2)], [
-        { id: "a", quantity: 2 },
-      ]),
-    validationResponse(
-      "Dispatch one packed unit per fulfillment, or use Dispatch packages"
-    )
+      selectPackedUnit(
+        result.choices[0].parcel_plan!,
+        [item("a", 2)],
+        [{ id: "a", quantity: 2 }]
+      ),
+    validationResponse("Fulfill one packed unit at a time.")
   )
+})
+
+test("catalog package identity is scoped to its remaining line and method while dispatch stays sequential", async () => {
+  process.env.JWT_SECRET = "test-packed-unit-signing-secret-long-enough"
+  const c = context([item("variant", 3)])
+  const result = await quotePackedUnits(c, async () => [quote("surface")])
+  const paid = signCourierQuote(result.choices[0], result.params, c)
+  const first = {
+    ...item("variant", 2),
+    id: "a",
+    detail: { fulfilled_quantity: 0 },
+  }
+  const second = {
+    ...item("variant", 1),
+    id: "b",
+    detail: { fulfilled_quantity: 0 },
+  }
+  const order = {
+    items: [first, second],
+    shipping_methods: [
+      { shipping_option_id: "option", data: { shiprocket_quote: paid } },
+    ],
+  }
+  const plan = paidPackedUnitPlan(paid)!
+  const jobs = remainingPackedUnits(order)
+  assert.equal(jobs[0].courier_company_id, 43)
+  assert.equal(jobs.length, 3)
+  const select = (lineId: string, packageId?: string, optionId = "option") =>
+    selectPackedUnit(
+      plan,
+      order.items,
+      [{ id: lineId, quantity: 1 }],
+      optionId,
+      packageId
+    )
+  assert.equal(select("a").id, jobs[0].id)
+  assert.equal(select("a", jobs[1].id).ordinal, 1)
+  assert.equal(select("b", jobs[2].id).ordinal, 2)
+  assert.equal(first.detail.fulfilled_quantity, 0)
+  assert.throws(() => select("a", jobs[2].id), /package is no longer available/)
+  assert.throws(() => select("b", jobs[1].id), /package is no longer available/)
+  assert.throws(
+    () => select("a", jobs[1].id, "other"),
+    /package is no longer available/
+  )
+  assert.throws(() => select("a", "invalid"), /package is no longer available/)
+  first.detail.fulfilled_quantity = 1
+  assert.equal(select("a").id, jobs[1].id)
+  assert.equal(select("b", jobs[2].id).ordinal, 2)
+  assert.throws(() => select("a", jobs[0].id), /package is no longer available/)
+  first.detail.fulfilled_quantity = 2
+  assert.equal(select("b").id, jobs[2].id)
+  assert.throws(() => select("a", jobs[2].id), /package is no longer available/)
+  second.detail.fulfilled_quantity = 1
+  assert.throws(() => select("b", jobs[2].id), /quantities no longer match/)
 })
 
 test("unverified or malformed paid plans retain their validation messages at the HTTP boundary", async () => {

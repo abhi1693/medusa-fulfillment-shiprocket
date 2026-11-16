@@ -1,5 +1,8 @@
 import { remoteFixture } from "./fixtures/existing-order"
-import { financialSnapshot, stableFulfillmentReference } from "../shared/order-money"
+import {
+  financialSnapshot,
+  stableFulfillmentReference,
+} from "../shared/order-money"
 import test from "node:test"
 import assert from "node:assert/strict"
 import axios from "axios"
@@ -68,12 +71,14 @@ function setup(t: any, options: any = {}) {
   const calls: any[] = []
   let rows: any[] = [courier]
   let awbResponse: any
+  let awbFailure: any
   let createFailure: any
   let orderPages: any[] = []
   let existing: any
   axios.defaults.adapter = async (config: any) => {
     calls.push({
       url: config.url,
+      timeout: config.timeout,
       order_id: config.shiprocket_order_id,
       params: config.params,
       data:
@@ -92,7 +97,8 @@ function setup(t: any, options: any = {}) {
     else if (config.url === "/orders/create/adhoc") {
       if (createFailure) throw createFailure
       data = { order_id: 100, shipment_id: 42 }
-    } else if (config.url === "/courier/assign/awb")
+    } else if (config.url === "/courier/assign/awb") {
+      if (awbFailure) throw awbFailure
       data = awbResponse ?? {
         awb_assign_status: 1,
         response: {
@@ -103,7 +109,12 @@ function setup(t: any, options: any = {}) {
           },
         },
       }
-    else if (config.url === "/orders")
+    } else if (config.url === "/orders/cancel") {
+      assert.deepEqual(JSON.parse(config.data).ids, [100])
+      existing.status = "CANCELED"
+      existing.shipments.status = "CANCELED"
+      data = { status: 200 }
+    } else if (config.url === "/orders")
       data = orderPages[Number(config.params.page) - 1]
     else if (config.url === "/orders/show/100") data = { data: existing }
     else if (config.url === "/courier/generate/pickup")
@@ -123,6 +134,7 @@ function setup(t: any, options: any = {}) {
       ...options,
     }),
     calls,
+    setAwbFailure: (value: any) => (awbFailure = value),
     setAwbResponse: (value: any) => (awbResponse = value),
     setOrderPages: (value: any[]) => (orderPages = value),
     setExisting: (value: any) => (existing = value),
@@ -211,7 +223,7 @@ test("multi-item fulfillment requires a measured parcel rather than an invented 
         courier_company_id: 2,
         amount: 50,
       }),
-    /Dispatch one packed unit/
+    /Fulfill one packed unit/
   )
   assert.equal(f.calls.length, 0)
   await f.client.create(
@@ -662,10 +674,26 @@ test("rate diagnostics explain cache, rejection, fallback and selection without 
 
 test("overall quote diagnostics preserve unknown-service eligibility while checkout excludes it", async (t) => {
   const messages: string[] = []
-  const f = setup(t, { logger: { info: (m: string) => messages.push(m), warn: () => {}, debug: () => {}, error: () => {} } })
-  f.setRows([{...courier, is_surface: undefined}])
-  await f.client.quote({pickup_postcode: "110077", delivery_postcode: "122001", weight: 1, cod: 0})
-  const record = JSON.parse(messages.find(m => m.startsWith("Shiprocket rate decision "))!.slice("Shiprocket rate decision ".length))
+  const f = setup(t, {
+    logger: {
+      info: (m: string) => messages.push(m),
+      warn: () => {},
+      debug: () => {},
+      error: () => {},
+    },
+  })
+  f.setRows([{ ...courier, is_surface: undefined }])
+  await f.client.quote({
+    pickup_postcode: "110077",
+    delivery_postcode: "122001",
+    weight: 1,
+    cod: 0,
+  })
+  const record = JSON.parse(
+    messages
+      .find((m) => m.startsWith("Shiprocket rate decision "))!
+      .slice("Shiprocket rate decision ".length)
+  )
   assert.equal(record.candidates[0].status, "selected")
   assert.deepEqual(record.candidates[0].reasons, [])
 })
@@ -673,24 +701,599 @@ test("overall quote diagnostics preserve unknown-service eligibility while check
 test("read-only cancellation verification does not revalidate an unavailable previous courier or change pickup", async (t) => {
   const f = setup(t)
   f.setRows([])
-  const financials = financialSnapshot(order, order.shipping_methods[0], [{ id: "item_fixture", quantity: 1 }])
+  const financials = financialSnapshot(order, order.shipping_methods[0], [
+    { id: "item_fixture", quantity: 1 },
+  ])
   const reference = stableFulfillmentReference(order.id, "option", financials)
-  f.setOrderPages([{ data: [{ id: 100, channel_order_id: reference }], meta: { pagination: { total_pages: 1 } } }])
-  f.setExisting({ id: 100, channel_order_id: reference, status: "CANCELED", status_code: 5, shipments: { id: 42, awb: "" } })
-  const result = await f.client.inspectCancelledFulfillment([
-    { shipping_option_id: "option" }, items, order, pickup,
-    { courier_company_id: 2, amount: 50 }, undefined, undefined,
-    () => { throw Error("Previous courier/rate must not be checked") }, financials,
-  ], [], reference)
+  f.setOrderPages([
+    {
+      data: [{ id: 100, channel_order_id: reference }],
+      meta: { pagination: { total_pages: 1 } },
+    },
+  ])
+  f.setExisting({
+    id: 100,
+    channel_order_id: reference,
+    status: "CANCELED",
+    status_code: 5,
+    shipments: { id: 42, awb: "" },
+  })
+  const result = await f.client.inspectCancelledFulfillment(
+    [
+      { shipping_option_id: "option" },
+      items,
+      order,
+      pickup,
+      { courier_company_id: 2, amount: 50 },
+      undefined,
+      undefined,
+      () => {
+        throw Error("Previous courier/rate must not be checked")
+      },
+      financials,
+    ],
+    [],
+    reference
+  )
   assert.equal(result.base_reference, reference)
   assert.deepEqual(result.cancelled_order_ids, [100])
-  assert(f.calls.every((call) => ["/auth/login", "/orders", "/orders/show/100"].includes(call.url)))
+  assert(
+    f.calls.every((call) =>
+      ["/auth/login", "/orders", "/orders/show/100"].includes(call.url)
+    )
+  )
 })
 
 test("read-only cancellation verification requires a trusted native financial allocation before carrier access", async (t) => {
   const f = setup(t)
-  await assert.rejects(f.client.inspectCancelledFulfillment([
-    { shipping_option_id: "option" }, items, order, pickup,
-  ], [], "medusa_saved"), /financial allocation/)
+  await assert.rejects(
+    f.client.inspectCancelledFulfillment(
+      [{ shipping_option_id: "option" }, items, order, pickup],
+      [],
+      "medusa_saved"
+    ),
+    /financial allocation/
+  )
   assert.equal(f.calls.length, 0)
+})
+
+test("AWB assignment has 90 seconds while order creation keeps its short timeout", async (t) => {
+  const f = setup(t)
+  await f.client.create({}, items, order, pickup, {
+    courier_company_id: 2,
+    amount: 50,
+  })
+  assert.equal(
+    f.calls.find((c) => c.url === "/courier/assign/awb").timeout,
+    90000
+  )
+  assert.equal(
+    f.calls.find((c) => c.url === "/orders/create/adhoc").timeout,
+    15000
+  )
+})
+for (const status of [0, "0"])
+  test(`explicit AWB rejection ${JSON.stringify(status)} cancels only its verified draft and allows same-order retry`, async (t) => {
+    const f = setup(t),
+      quote = { courier_company_id: 2, amount: 50 }
+    const prepared = await f.client.prepareFulfillment(
+      {},
+      items,
+      order,
+      pickup,
+      quote
+    )
+    const binding = {
+      order_id: 100,
+      shipment_id: 42,
+      merchant_reference: prepared.orderData.order_id,
+    }
+    f.setExisting(remoteFixture(prepared.orderData, binding))
+    f.setAwbResponse({
+      awb_assign_status: status,
+      message: "assignment failed",
+    })
+    await assert.rejects(
+      () => f.client.create({}, items, order, pickup, quote),
+      /cancelled and cancellation confirmed/
+    )
+    assert.equal(f.calls.filter((c) => c.url === "/orders/cancel").length, 1)
+    assert.equal(
+      f.calls.filter((c) => c.url === "/orders/create/adhoc").length,
+      1
+    )
+    assert.equal(
+      f.calls.filter((c) => c.url === "/courier/assign/awb").length,
+      1
+    )
+    f.setOrderPages([
+      {
+        data: [{ id: 100, channel_order_id: binding.merchant_reference }],
+        meta: { pagination: { total_pages: 1 } },
+      },
+    ])
+    const next = await f.client.recoverFailedFulfillment(
+      [{}, items, order, pickup, quote],
+      [],
+      undefined,
+      { reference_hint: binding.merchant_reference }
+    )
+    assert.notEqual(next.reference, binding.merchant_reference)
+    assert.ok(next.reference.endsWith("_r1"))
+    assert.equal(next.resume, undefined)
+  })
+test("a 504 assignment with a verified late AWB is retained for same-order reuse", async (t) => {
+  const f = setup(t),
+    quote = { courier_company_id: 2, amount: 50 }
+  const prepared = await f.client.prepareFulfillment(
+    {},
+    items,
+    order,
+    pickup,
+    quote
+  )
+  const remote = remoteFixture(prepared.orderData, {
+    order_id: 100,
+    shipment_id: 42,
+    merchant_reference: prepared.orderData.order_id,
+  })
+  remote.shipments.awb = "ASSIGNED_WHILE_TIMED_OUT"
+  remote.shipments.courier_company_id = 2
+  f.setExisting(remote)
+  f.setAwbFailure(
+    Object.assign(new Error("Gateway timeout"), {
+      response: { status: 504, data: {} },
+    })
+  )
+  await assert.rejects(
+    () => f.client.create({}, items, order, pickup, quote),
+    /assigned an AWB to order 100, shipment 42.*unconfirmed response/
+  )
+  assert.equal(f.calls.filter((c) => c.url === "/orders/cancel").length, 0)
+  assert.equal(
+    f.calls.filter((c) => c.url === "/orders/create/adhoc").length,
+    1
+  )
+})
+
+for (const failure of [
+  "timeout",
+  "network",
+  "http500",
+  "http502",
+  "http503",
+  "http504",
+  "missing-status",
+  "success-without-awb",
+  "rejection-timeout",
+  "rejection-rmk-timeout",
+  "rejection-string-timeout",
+  "rejection-action-timeout",
+  "rejection-status408",
+  "rejection-status425",
+  "rejection-status429",
+  "rejection-status500",
+  "rejection-status504",
+]) {
+  test(`uncertain ${failure} retains its exact draft after one read and never cancels`, async (t) => {
+    const f = setup(t)
+    const quote = { courier_company_id: 2, amount: 50 }
+    const prepared = await f.client.prepareFulfillment(
+      {},
+      items,
+      order,
+      pickup,
+      quote
+    )
+    f.setExisting(
+      remoteFixture(prepared.orderData, {
+        order_id: 100,
+        shipment_id: 42,
+        merchant_reference: prepared.orderData.order_id,
+      })
+    )
+    if (failure === "missing-status") f.setAwbResponse({ response: {} })
+    else if (failure === "success-without-awb")
+      f.setAwbResponse({ awb_assign_status: 1, response: { data: {} } })
+    else if (failure === "rejection-timeout")
+      f.setAwbResponse({
+        awb_assign_status: 0,
+        response: { data: { awb_assign_error: "Carrier gateway timed out" } },
+      })
+    else if (failure === "rejection-rmk-timeout")
+      f.setAwbResponse({
+        awb_assign_status: 0,
+        response: { data: { rmk: "Carrier request timed out" } },
+      })
+    else if (failure === "rejection-string-timeout")
+      f.setAwbResponse({
+        awb_assign_status: "0",
+        response: { data: "cURL error 28: upstream timeout" },
+      })
+    else if (failure === "rejection-action-timeout")
+      f.setAwbResponse({
+        awb_assign_status: 0,
+        response: {
+          action_required:
+            "Carrier gateway timed out. Check assignment before retrying.",
+        },
+      })
+    else if (failure.startsWith("rejection-status"))
+      f.setAwbResponse({
+        awb_assign_status: 0,
+        status_code: failure.slice(16),
+        message: "Carrier request was not completed",
+      })
+    else
+      f.setAwbFailure(
+        Object.assign(
+          Error(failure),
+          failure.startsWith("http")
+            ? { response: { status: Number(failure.slice(4)), data: {} } }
+            : { code: failure === "timeout" ? "ECONNABORTED" : "ECONNRESET" }
+        )
+      )
+    await assert.rejects(
+      () => f.client.create({}, items, order, pickup, quote),
+      (error: any) => {
+        assert.match(
+          error.message,
+          /did not confirm AWB assignment for order 100, shipment 42/
+        )
+        assert.ok(error.message.includes(prepared.orderData.order_id))
+        assert.match(error.message, /assignment may still complete/)
+        assert.match(error.message, /no order was cancelled or replaced/)
+        return true
+      }
+    )
+    assert.equal(f.calls.filter((c) => c.url === "/orders/show/100").length, 1)
+    assert.equal(f.calls.filter((c) => c.url === "/orders/cancel").length, 0)
+    assert.equal(
+      f.calls.filter((c) => c.url === "/orders/create/adhoc").length,
+      1
+    )
+    assert.equal(
+      f.calls.filter((c) => c.url === "/courier/assign/awb").length,
+      1
+    )
+  })
+}
+
+test("a late AWB with mismatched courier is not reused or cancelled after an uncertain response", async (t) => {
+  const f = setup(t)
+  const quote = { courier_company_id: 2, amount: 50 }
+  const prepared = await f.client.prepareFulfillment(
+    {},
+    items,
+    order,
+    pickup,
+    quote
+  )
+  const remote = remoteFixture(prepared.orderData, {
+    order_id: 100,
+    shipment_id: 42,
+    merchant_reference: prepared.orderData.order_id,
+  })
+  remote.shipments.awb = "OTHER_COURIER_AWB"
+  remote.shipments.courier_company_id = 99
+  f.setExisting(remote)
+  f.setAwbFailure(
+    Object.assign(Error("Gateway timeout"), {
+      response: { status: 504, data: {} },
+    })
+  )
+  await assert.rejects(
+    () => f.client.create({}, items, order, pickup, quote),
+    /assignment may still complete/
+  )
+  assert.equal(f.calls.filter((c) => c.url === "/orders/cancel").length, 0)
+})
+
+test("an unavailable verification read cannot turn a 504 into permission to cancel", async (t) => {
+  const f = setup(t)
+  f.setAwbFailure(
+    Object.assign(Error("Gateway timeout"), {
+      response: { status: 504, data: {} },
+    })
+  )
+  await assert.rejects(
+    () =>
+      f.client.create({}, items, order, pickup, {
+        courier_company_id: 2,
+        amount: 50,
+      }),
+    /did not confirm AWB assignment for order 100, shipment 42/
+  )
+  assert.equal(f.calls.filter((c) => c.url === "/orders/cancel").length, 0)
+  assert.equal(
+    f.calls.filter((c) => c.url === "/orders/create/adhoc").length,
+    1
+  )
+})
+
+test("carrier rejection survives confirmed cancellation and logs only redacted diagnostic fields", async (t) => {
+  const logs: string[] = []
+  const f = setup(t, {
+    logger: {
+      info: (s: string) => logs.push(s),
+      warn: (s: string) => logs.push(s),
+      debug: () => {},
+      error: (s: string) => logs.push(s),
+    },
+  })
+  const quote = { courier_company_id: 2, amount: 50 }
+  const prepared = await f.client.prepareFulfillment(
+    {},
+    items,
+    order,
+    pickup,
+    quote
+  )
+  f.setExisting(
+    remoteFixture(prepared.orderData, {
+      order_id: 100,
+      shipment_id: 42,
+      merchant_reference: prepared.orderData.order_id,
+    })
+  )
+  f.setAwbResponse({
+    awb_assign_status: 0,
+    response: {
+      data: {
+        awb_assign_error:
+          "Carrier SR-AWB-42 cannot allocate waybill for Fixture Merchant at Fixture address, fixture@example.test, 9876543210; password=fixture",
+      },
+      action_required: "Contact the carrier integration team",
+    },
+  })
+  await assert.rejects(
+    () => f.client.create({}, items, order, pickup, quote),
+    (e: any) => {
+      assert.match(e.message, /Carrier SR-AWB-42 cannot allocate waybill/)
+      assert.match(e.message, /Contact the carrier integration team/)
+      assert.match(e.message, /cancellation confirmed/)
+      assert.ok(!e.message.includes("fixture@example.test"))
+      assert.ok(!e.message.includes("Fixture address"))
+      assert.ok(!e.message.includes("9876543210"))
+      return true
+    }
+  )
+  assert.ok(
+    logs.some(
+      (s) => s.startsWith("Shiprocket AWB result ") && s.includes("SR-AWB-42")
+    )
+  )
+  assert.ok(
+    logs.some(
+      (s) => s.startsWith("Shiprocket AWB failure ") && s.includes("SR-AWB-42")
+    )
+  )
+  for (const line of logs.filter((s) => s.startsWith("Shiprocket AWB"))) {
+    for (const secret of [
+      "Fixture Merchant",
+      "Fixture address",
+      "fixture@example.test",
+      "9876543210",
+      "password=fixture",
+    ])
+      assert.ok(!line.includes(secret), secret)
+  }
+})
+
+test("carrier warehouse remark survives confirmed cancellation without copying its raw response", async (t) => {
+  const logs: string[] = []
+  const f = setup(t, {
+    logger: {
+      info: (s: string) => logs.push(s),
+      warn: (s: string) => logs.push(s),
+      debug: () => {},
+      error: (s: string) => logs.push(s),
+    },
+  })
+  const quote = { courier_company_id: 2, amount: 50 }
+  const prepared = await f.client.prepareFulfillment(
+    {},
+    items,
+    order,
+    pickup,
+    quote
+  )
+  f.setExisting(
+    remoteFixture(prepared.orderData, {
+      order_id: 100,
+      shipment_id: 42,
+      merchant_reference: prepared.orderData.order_id,
+    })
+  )
+  const reason = "ClientWarehouse matching query does not exist."
+  f.setAwbResponse({
+    awb_assign_status: 0,
+    response: {
+      data: {
+        rmk: reason,
+        error: true,
+        success: false,
+        unknown: "must-not-copy-raw-warehouse-payload",
+      },
+    },
+    no_pickup_popup: 0,
+    quick_pick: 0,
+  })
+  await assert.rejects(
+    () => f.client.create({}, items, order, pickup, quote),
+    (e: any) => {
+      assert.ok(e.message.includes(reason))
+      assert.match(e.message, /cancellation confirmed/)
+      assert.ok(!e.message.includes("must-not-copy-raw-warehouse-payload"))
+      return true
+    }
+  )
+  assert.ok(
+    logs.some(
+      (line) =>
+        line.startsWith("Shiprocket AWB result ") && line.includes(reason)
+    )
+  )
+  assert.ok(
+    logs.some(
+      (line) =>
+        line.startsWith("Shiprocket AWB failure ") && line.includes(reason)
+    )
+  )
+  assert.ok(
+    !logs.some((line) => line.includes("must-not-copy-raw-warehouse-payload"))
+  )
+})
+
+test("plain response-data rejection survives confirmed cancellation", async (t) => {
+  const f = setup(t)
+  const quote = { courier_company_id: 2, amount: 50 }
+  const prepared = await f.client.prepareFulfillment(
+    {},
+    items,
+    order,
+    pickup,
+    quote
+  )
+  f.setExisting(
+    remoteFixture(prepared.orderData, {
+      order_id: 100,
+      shipment_id: 42,
+      merchant_reference: prepared.orderData.order_id,
+    })
+  )
+  f.setAwbResponse({
+    awb_assign_status: 0,
+    response: { data: "Please contact support team" },
+    no_pickup_popup: 0,
+    quick_pick: 0,
+  })
+  await assert.rejects(
+    () => f.client.create({}, items, order, pickup, quote),
+    (e: any) => {
+      assert.match(e.message, /Please contact support team/)
+      assert.match(e.message, /cancellation confirmed/)
+      return true
+    }
+  )
+})
+
+test("cancellation verification failure preserves the original carrier rejection", async (t) => {
+  const f = setup(t)
+  f.setAwbResponse({
+    awb_assign_status: 0,
+    response: {
+      data: { awb_assign_error: "Carrier SR-VERIFY-7 rejected allocation" },
+    },
+  })
+  await assert.rejects(
+    () =>
+      f.client.create({}, items, order, pickup, {
+        courier_company_id: 2,
+        amount: 50,
+      }),
+    (e: any) => {
+      assert.match(e.message, /Carrier SR-VERIFY-7 rejected allocation/)
+      assert.match(e.message, /Cancellation could not be confirmed/)
+      return true
+    }
+  )
+  assert.equal(f.calls.filter((c) => c.url === "/orders/cancel").length, 0)
+})
+
+test("HTTP AWB rejection body remains visible while preserving its draft without transport credentials", async (t) => {
+  const f = setup(t),
+    quote = { courier_company_id: 2, amount: 50 }
+  const prepared = await f.client.prepareFulfillment(
+    {},
+    items,
+    order,
+    pickup,
+    quote
+  )
+  f.setExisting(
+    remoteFixture(prepared.orderData, {
+      order_id: 100,
+      shipment_id: 42,
+      merchant_reference: prepared.orderData.order_id,
+    })
+  )
+  f.setAwbFailure(
+    Object.assign(new Error("request failed"), {
+      response: {
+        status: 422,
+        data: {
+          message: "Carrier service SR-HTTP-422 rejected this request",
+          action_required: "Review carrier configuration",
+        },
+        headers: { authorization: "hidden-response-credential" },
+      },
+      config: { headers: { authorization: "hidden-request-credential" } },
+    })
+  )
+  await assert.rejects(
+    () => f.client.create({}, items, order, pickup, quote),
+    (e: any) => {
+      assert.match(e.message, /Carrier service SR-HTTP-422/)
+      assert.match(e.message, /Review carrier configuration/)
+      assert.match(e.message, /no order was cancelled or replaced/)
+      assert.ok(!e.message.includes("hidden-"))
+      return true
+    }
+  )
+  assert.equal(f.calls.filter((c) => c.url === "/orders/cancel").length, 0)
+})
+
+test("existing-only resume rejection retains its carrier reason without cancelling", async (t) => {
+  const f = setup(t),
+    quote = { courier_company_id: 2, amount: 50 }
+  const prepared = await f.client.prepareFulfillment(
+    {},
+    items,
+    order,
+    pickup,
+    quote
+  )
+  const binding = {
+    order_id: 100,
+    shipment_id: 42,
+    merchant_reference: prepared.orderData.order_id,
+  }
+  f.setExisting(remoteFixture(prepared.orderData, binding))
+  const review = await f.client.reviewExistingFulfillment(
+    binding,
+    {},
+    items,
+    order,
+    pickup,
+    quote
+  )
+  f.setAwbResponse({
+    awb_assign_status: 0,
+    response: {
+      data: { awb_assign_error: "Carrier SR-RESUME-9 refused assignment" },
+    },
+  })
+  await assert.rejects(
+    () =>
+      f.client.create(
+        {},
+        items,
+        order,
+        pickup,
+        quote,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { ...binding, review_digest: review.digest }
+      ),
+    /Carrier SR-RESUME-9/
+  )
+  assert.ok(
+    !f.calls.some((c) =>
+      ["/orders/cancel", "/orders/create/adhoc"].includes(c.url)
+    )
+  )
 })

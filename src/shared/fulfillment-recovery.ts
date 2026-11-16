@@ -142,10 +142,6 @@ export async function recoverFulfillmentAttempt(
       return invalid(
         "This shipment is already linked to a native fulfillment. Use the existing fulfillment instead of creating another"
       )
-    if (isPendingOrderCancellation(remote.status, remote.status_code))
-      return invalid(
-        "Shiprocket cancellation is pending. Retry this same order later; no replacement was created"
-      )
     const shipments = Array.isArray(remote.shipments)
       ? remote.shipments
       : remote.shipments
@@ -157,22 +153,31 @@ export async function recoverFulfillmentAttempt(
       Number(shipments[0].id) <= 0
     )
       return invalid("The previous shipment cannot be identified safely")
+    if (isPendingOrderCancellation(remote.status, remote.status_code)) {
+      const awb = shipments[0].awb || shipments[0].awb_code
+      const knownAwb =
+        typeof awb === "string" && /^[A-Za-z0-9_-]{1,100}$/.test(awb)
+          ? ` with AWB ${awb}`
+          : ""
+      const shipmentStatus = Number(shipments[0].status_code)
+      return invalid(
+        `Shiprocket cancellation is pending for order ${row.id}, shipment ${Number(shipments[0].id)} (order status 18${Number.isSafeInteger(shipmentStatus) && shipmentStatus > 0 ? `, shipment status ${shipmentStatus}` : ""})${knownAwb}. Check this shipment in Shiprocket before retrying; no replacement was created.`
+      )
+    }
     if (cancelled(remote)) {
-      const previousBooking =
-        readOnly &&
-        [
-          "awb_assign_date",
-          "awb_assigned_date",
-          "pickup_scheduled_date",
-          "pickup_generated_date",
-        ].some((field) => {
-          const value = shipments[0][field]
-          return (
-            value !== undefined &&
-            value !== null &&
-            !(typeof value === "string" && !value.trim())
-          )
-        })
+      const previousBooking = [
+        "awb_assign_date",
+        "awb_assigned_date",
+        "pickup_scheduled_date",
+        "pickup_generated_date",
+      ].some((field) => {
+        const value = shipments[0][field]
+        return (
+          value !== undefined &&
+          value !== null &&
+          !(typeof value === "string" && !value.trim())
+        )
+      })
       if (previousBooking)
         return invalid(
           "The cancelled shipment has booking or pickup history. Review its carrier cost/refund before creating another"
@@ -240,32 +245,15 @@ export async function recoverFulfillmentAttempt(
       verified_attempts: found.length,
     }
   }
-  const cancelledIds: number[] = []
-  for (const { binding } of active) {
-    beforeWrite?.()
-    await api.post("/orders/cancel", { ids: [binding.order_id] })
-    const result = await api.get(`/orders/show/${binding.order_id}`),
-      remote = result.data?.data ?? result.data,
-      shipments = Array.isArray(remote?.shipments)
-        ? remote.shipments
-        : [remote?.shipments]
-    if (
-      Number(remote?.id) !== binding.order_id ||
-      remote.channel_order_id !== binding.merchant_reference ||
-      !cancelled(remote) ||
-      shipments.length !== 1 ||
-      Number(shipments[0]?.id) !== binding.shipment_id ||
-      shipments[0]?.awb ||
-      shipments[0]?.awb_code
+  if (active.length) {
+    const { binding } = active[0]
+    return invalid(
+      `Shiprocket AWB assignment is still unconfirmed for order ${binding.order_id}, shipment ${binding.shipment_id}, reference ${binding.merchant_reference}. Check this same shipment in Shiprocket before retrying; no order was cancelled or replaced.`
     )
-      return invalid(
-        "Shiprocket cancellation is not confirmed yet. Retry this same order later; no replacement was created"
-      )
-    cancelledIds.push(binding.order_id)
   }
   return {
     reference: retryReference(base, highest + 1),
-    cancelled_order_ids: cancelledIds,
+    cancelled_order_ids: confirmedCancelledIds,
     verified_attempts: found.length,
   }
 }

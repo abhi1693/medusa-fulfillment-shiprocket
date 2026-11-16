@@ -128,9 +128,7 @@ export async function quotePackedUnits(
     })
   }
   if (!choices.length)
-    invalid(
-      "No common delivery service is available for all packed products"
-    )
+    invalid("No common delivery service is available for all packed products")
   return { choices, params: inputs[0].params }
 }
 /** Signed paid plan, deliberately independent of later catalog edits. */
@@ -150,12 +148,11 @@ export function selectPackedUnit(
   plan: PackedUnitPlan,
   orderItems: any[],
   selected: { id: string; quantity: number }[],
-  optionId = ""
+  optionId = "",
+  packageId?: string
 ) {
   if (selected.length !== 1 || Number(selected[0].quantity) !== 1)
-    invalid(
-      "Dispatch one packed unit per fulfillment, or use Dispatch packages"
-    )
+    invalid("Fulfill one packed unit at a time.")
   const line = orderItems.find((i) => i.id === selected[0].id)
   const key = line && shipmentLineKey(line)
   const unit = plan.units.find((u) => u.key === key)
@@ -163,19 +160,40 @@ export function selectPackedUnit(
     .filter((i) => shipmentLineKey(i) === key)
     .sort((a, b) => a.id.localeCompare(b.id))
   const ordered = same.reduce((n, i) => n + Number(i.quantity), 0)
-  const ordinal = same.reduce(
+  let ordinal = same.reduce(
     (n, i) => n + Number(i.detail?.fulfilled_quantity || 0),
     0
   )
   if (!unit || ordered !== unit.quantity || ordinal >= unit.quantity)
     invalid("Order quantities no longer match the paid package plan")
+  if (packageId !== undefined) {
+    let cursor = ordinal
+    let requested: number | undefined
+    for (const candidate of same) {
+      const remaining =
+        Number(candidate.quantity) -
+        Number(candidate.detail?.fulfilled_quantity || 0)
+      if (candidate.id === line.id)
+        for (let n = 0; n < remaining; n++)
+          if (packedUnitId(optionId, key, cursor + n) === packageId)
+            requested = cursor + n
+      cursor += remaining
+    }
+    if (requested === undefined)
+      invalid("The selected shipping package is no longer available")
+    ordinal = requested
+  }
   return {
     ...unit,
-    id: createHash("sha256")
-      .update(JSON.stringify([optionId, key, ordinal]))
-      .digest("hex"),
+    id: packedUnitId(optionId, key, ordinal),
     ordinal,
   }
+}
+
+function packedUnitId(optionId: string, key: string, ordinal: number) {
+  return createHash("sha256")
+    .update(JSON.stringify([optionId, key, ordinal]))
+    .digest("hex")
 }
 
 export function remainingPackedUnits(order: any) {
@@ -187,6 +205,7 @@ export function remainingPackedUnits(order: any) {
     items: { id: string; quantity: number }[]
     measurements: ShippingMeasurements
     carrier_amount: number
+    courier_company_id: number
     courier_name: string
     service: string | null
   }[] = []
@@ -216,17 +235,14 @@ export function remainingPackedUnits(order: any) {
           Number(line.quantity) - Number(line.detail?.fulfilled_quantity || 0)
         for (let n = 0; n < remaining; n++, ordinal++)
           jobs.push({
-            id: createHash("sha256")
-              .update(
-                JSON.stringify([method.shipping_option_id, unit.key, ordinal])
-              )
-              .digest("hex"),
+            id: packedUnitId(method.shipping_option_id, unit.key, ordinal),
             title: line.title || line.variant_sku || "Product",
             shipping_option_id: method.shipping_option_id,
             location_id: quote.origin_location_id,
             items: [{ id: line.id, quantity: 1 }],
             measurements: unit.measurements,
             carrier_amount: unit.courier.amount,
+            courier_company_id: unit.courier.courier_company_id,
             courier_name: unit.courier.courier_name,
             service: unit.courier.service,
           })

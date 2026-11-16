@@ -7,6 +7,12 @@ import {
 } from "../shared/fulfillment-pickup"
 import { pickupScope } from "../shared/pickup-mapping"
 import { shiprocketApiUrl } from "../providers/shiprocket/client/config"
+import { signCourierQuote } from "../shared/courier-quote"
+import {
+  quotePackedUnits,
+  remainingPackedUnits,
+} from "../shared/packed-unit-plan"
+import { courierPolicy } from "../providers/shiprocket/utils/courier-policy"
 process.env.JWT_SECRET = "fixture-fulfillment-signing-secret-at-least-32"
 process.env.SHIPROCKET_EMAIL = "api@example.test"
 process.env.SHIPROCKET_PASSWORD = "fixture-password"
@@ -118,6 +124,27 @@ test("actual fulfillment warehouse may not silently replace the quoted origin", 
     }),
     /warehouse must match/
   )
+})
+test("customer quote and request fields cannot authorize merchant carrier spending", async () => {
+  const untrusted = {
+    courier_company_id: 33,
+    service: "surface",
+    amount: 1000,
+  }
+  const paid = { ...quote, merchant_courier_selection: untrusted }
+  const f = fixture({ quote: paid })
+  const token = await prepare(f.container, "order", {
+    additional_data: { merchant_courier_selection: untrusted },
+  })
+  const context = readFulfillmentContext(
+    token,
+    "order",
+    "option",
+    "loc",
+    f.mapping.scope,
+    paid
+  )
+  assert.equal(context.merchant_courier_selection, undefined)
 })
 test("missing metadata, wrong connection and detached provider fail clearly", async () => {
   for (const metadata of [
@@ -288,12 +315,12 @@ test("two methods for the same profile cannot silently share an unknown item poo
   )
 })
 
-test("explicit merchant courier preserves purchased service and is bound into signed fulfillment context", async () => {
+test("explicit merchant courier can change service in signed fulfillment context without changing the paid quote", async () => {
   const serviceQuote = { ...quote, service: "surface" }
   const override = {
     scope: pickupScope(shiprocketApiUrl(), process.env.SHIPROCKET_EMAIL!),
     location_id: "loc",
-    service: "surface",
+    service: "air",
     courier_company_id: 51,
     courier_name: "Merchant choice",
     amount: 55,
@@ -312,8 +339,18 @@ test("explicit merchant courier preserves purchased service and is bound into si
     serviceQuote
   )
   assert.equal(context.courier?.courier_company_id, 51)
+  assert.equal(context.courier?.service, "air")
+  assert.equal(context.courier?.amount, 55)
+  assert.deepEqual(context.merchant_courier_selection, {
+    courier_company_id: 51,
+    service: "air",
+    amount: 55,
+  })
+  assert.equal(serviceQuote.service, "surface")
+  assert.equal(serviceQuote.courier_company_id, 33)
+  assert.equal(serviceQuote.quote_token, "saved-courier-33")
   for (const invalid of [
-    { ...override, service: "air" },
+    { ...override, service: "unknown" },
     { ...override, location_id: "other" },
     { ...override, scope: "other" },
     { ...override, courier_company_id: 0 },
@@ -327,4 +364,132 @@ test("explicit merchant courier preserves purchased service and is bound into si
       /merchant courier selection/
     )
   }
+})
+
+test("package overrides follow only their remaining stable unit and may change surface to air", async () => {
+  const item = {
+    id: "line",
+    variant_id: "variant",
+    unit_price: 100,
+    quantity: 2,
+    requires_shipping: true,
+    detail: { fulfilled_quantity: 0 },
+    variant: { weight: 500, length: 100, width: 80, height: 20 },
+  }
+  const context = {
+    id: "cart",
+    currency_code: "inr",
+    items: [item],
+    from_location: {
+      id: "loc",
+      address: { country_code: "in", postal_code: "110001" },
+    },
+    shipping_address: { country_code: "in", postal_code: "110002" },
+    shiprocket_quote_option_id: "option",
+    shiprocket_quote_account_scope: "account",
+  }
+  const result = await quotePackedUnits(context, async () => [
+    {
+      courier_company_id: 33,
+      courier_name: "Paid surface",
+      amount: 50,
+      service: "surface",
+      rating: 4,
+      estimated_delivery_days: null,
+      estimated_delivery_date: null,
+      realtime_tracking: true,
+      pod: "instant",
+      call_before_delivery: true,
+      policy: courierPolicy(),
+      relaxed_preferences: [],
+      quoted_at: new Date().toISOString(),
+    },
+  ])
+  const paid = signCourierQuote(result.choices[0], result.params, context)
+  const original = structuredClone(paid)
+  const order = {
+    items: [item],
+    shipping_methods: [
+      { shipping_option_id: "option", data: { shiprocket_quote: paid } },
+    ],
+  }
+  const jobs = remainingPackedUnits(order)
+  const override = {
+    scope: pickupScope(shiprocketApiUrl(), process.env.SHIPROCKET_EMAIL!),
+    shipping_option_id: "option",
+    location_id: "loc",
+    service: "air",
+    courier_company_id: 60,
+    courier_name: "Merchant air",
+    amount: 65,
+  }
+  const f = fixture({
+    items: [item],
+    quote: paid,
+    metadata: {
+      shiprocket_package_couriers: { [jobs[1].id]: override },
+      // Legacy per-method selection must not leak into packages.
+      shiprocket_fulfillment_couriers: {
+        option: { ...override, courier_company_id: 99 },
+      },
+    },
+  })
+  const read = async (packageId?: string) => {
+    const token = await prepare(f.container, "order", {
+      items: [{ id: "line", quantity: 1 }],
+      package_id: packageId,
+    })
+    return readFulfillmentContext(
+      token,
+      "order",
+      "option",
+      "loc",
+      override.scope,
+      paid
+    )
+  }
+  const first = await read()
+  assert.equal(first.package_id, jobs[0].id)
+  assert.equal(first.courier?.courier_company_id, 33)
+  assert.equal(first.courier?.service, "surface")
+  assert.equal(first.merchant_courier_selection, undefined)
+  const future = await read(jobs[1].id)
+  assert.equal(future.package_id, jobs[1].id)
+  assert.equal(future.courier?.courier_company_id, 60)
+  assert.equal(future.courier?.service, "air")
+  assert.equal(future.courier?.amount, 65)
+  assert.deepEqual(future.merchant_courier_selection, {
+    courier_company_id: 60,
+    service: "air",
+    amount: 65,
+  })
+  assert.equal(future.financials?.lines[0].fulfilled_quantity, 0)
+  assert.deepEqual(paid, original)
+  item.detail.fulfilled_quantity = 1
+  const next = await read()
+  assert.equal(next.package_id, jobs[1].id)
+  assert.equal(next.courier?.courier_company_id, 60)
+  await assert.rejects(() => read(jobs[0].id), /package is no longer available/)
+  for (const invalid of [
+    { ...override, shipping_option_id: "other" },
+    { ...override, location_id: "other" },
+    { ...override, scope: "other" },
+  ]) {
+    const bad = fixture({
+      items: [item],
+      quote: paid,
+      metadata: { shiprocket_package_couriers: { [jobs[1].id]: invalid } },
+    })
+    await assert.rejects(
+      () =>
+        prepare(bad.container, "order", {
+          items: [{ id: "line", quantity: 1 }],
+        }),
+      /merchant courier selection/
+    )
+  }
+  await assert.rejects(
+    () => prepare(fixture().container, "order", { package_id: jobs[0].id }),
+    /package is no longer available/
+  )
 })

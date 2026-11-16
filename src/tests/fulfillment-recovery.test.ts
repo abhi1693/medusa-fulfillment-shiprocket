@@ -61,7 +61,6 @@ function fixture(count = 1) {
     })
   )
   const calls: { method: string; path: string; body?: any }[] = []
-  let cancellation = "CANCELED"
   const api = {
     get: async (path: string) => {
       calls.push({ method: "GET", path })
@@ -93,18 +92,13 @@ function fixture(count = 1) {
     },
     post: async (path: string, body: any) => {
       calls.push({ method: "POST", path, body })
-      for (const id of body.ids)
-        remotes.find((r) => r.id === id)!.status = cancellation
-      return { data: {} }
+      throw Error("Recovery must not perform carrier writes")
     },
   }
   return {
     api,
     remotes,
     calls,
-    setCancellation: (s: string) => {
-      cancellation = s
-    },
   }
 }
 test("no old attempt uses the original deterministic reference and never creates in the recovery step", async () => {
@@ -114,20 +108,17 @@ test("no old attempt uses the original deterministic reference and never creates
   assert.equal(result.verified_attempts, 0)
   assert(!f.calls.some((c) => c.method === "POST"))
 })
-test("cancels a verified draft and confirms cancellation before returning a fresh scoped reference", async () => {
+test("an active unbooked draft is preserved until assignment or cancellation is verified", async () => {
   const f = fixture()
   let observed = 0
-  const result = await recoverFulfillmentAttempt(
-    f.api,
-    input(),
-    () => observed++
+  await assert.rejects(
+    recoverFulfillmentAttempt(f.api, input(), () => observed++),
+    /unconfirmed for order 100, shipment 42/
   )
-  assert.deepEqual(result.cancelled_order_ids, [100])
-  assert.equal(result.reference, retryReference(expected.order_id, 1))
   assert(observed > 0)
   assert.deepEqual(
     f.calls.filter((c) => c.method === "POST").map((c) => c.path),
-    ["/orders/cancel"]
+    []
   )
   assert.equal(f.calls[f.calls.length - 1]?.path, "/orders/show/100")
 })
@@ -151,26 +142,42 @@ test("an existing verified AWB is reused rather than cancelled or purchased twic
   assert.match(result.resume?.review_digest || "", /^[a-f0-9]{64}$/)
   assert(!f.calls.some((c) => c.method === "POST"))
 })
-test("no replacement on pending cancellation, declined cancellation or network failure", async () => {
-  for (const kind of ["pending", "declined", "network"]) {
-    const f = fixture()
-    f.setCancellation("CANCELLATION REQUESTED")
-    if (kind !== "pending")
-      f.api.post = async () => {
-        throw Error(kind)
-      }
-    await assert.rejects(
-      recoverFulfillmentAttempt(f.api, input()),
-      kind === "pending" ? /not confirmed/ : new RegExp(kind)
-    )
-    assert(!f.calls.some((c) => c.path.includes("create")))
-  }
+test("pending cancellation with a late AWB reports its bound IDs and never permits replacement", async () => {
   const f = fixture()
   f.remotes[0].status = "CANCELLATION REQUESTED"
+  f.remotes[0].status_code = 18
+  f.remotes[0].shipments.status_code = 16
+  f.remotes[0].shipments.awb = "SRTP_FIXTURE_171"
   await assert.rejects(
     recoverFulfillmentAttempt(f.api, input()),
-    /cancellation is pending/
+    /cancellation is pending for order 100, shipment 42 \(order status 18, shipment status 16\) with AWB SRTP_FIXTURE_171/
   )
+  assert(!f.calls.some((c) => c.method === "POST"))
+})
+test("pending cancellation diagnostics never include malformed remote AWB or status text", async () => {
+  for (const awb of [
+    "fixture@example.test",
+    "unsafe tracking value",
+    "A".repeat(101),
+  ]) {
+    const f = fixture()
+    f.remotes[0].status = "CANCELLATION REQUESTED"
+    f.remotes[0].shipments.awb = awb
+    f.remotes[0].shipments.status_code = "private-status-text"
+    await assert.rejects(
+      recoverFulfillmentAttempt(f.api, input()),
+      (error: any) => {
+        assert.match(
+          error.message,
+          /order 100, shipment 42 \(order status 18\)/
+        )
+        assert.ok(!error.message.includes(awb))
+        assert.ok(!error.message.includes("private-status-text"))
+        return true
+      }
+    )
+    assert(!f.calls.some((c) => c.method === "POST"))
+  }
 })
 test("does not cancel shipped, registered, financially mismatched or wrong-warehouse attempts", async () => {
   for (const kind of [
@@ -210,20 +217,25 @@ test("verifies all candidates before any cancellation and refuses multiple activ
 test("ignores unrelated global latest orders and validates masked identity using shipment details", async () => {
   const f = fixture()
   f.remotes[0].customer_phone = "98xxxxxx10"
+  f.remotes[0].shipments.awb = "VERIFIED_AWB"
+  f.remotes[0].shipments.courier_company_id = 8
   f.remotes.push({
     ...structuredClone(f.remotes[0]),
     id: 999,
     channel_order_id: "unrelated-newest-order",
   })
   const result = await recoverFulfillmentAttempt(f.api, input())
-  assert.deepEqual(result.cancelled_order_ids, [100])
+  assert.equal(result.resume?.order_id, 100)
+  assert.deepEqual(result.cancelled_order_ids, [])
   assert(!f.calls.some((c) => c.path === "/orders/show/999"))
 })
 test("legacy timestamps still belong to the same native order and must pass full comparison", async () => {
   const f = fixture()
   f.remotes[0].channel_order_id = "order_fixture-1794263026"
+  f.remotes[0].shipments.awb = "VERIFIED_AWB"
+  f.remotes[0].shipments.courier_company_id = 8
   const result = await recoverFulfillmentAttempt(f.api, input())
-  assert.equal(result.reference, retryReference(expected.order_id, 1))
+  assert.equal(result.reference, "order_fixture-1794263026")
 })
 test("malformed, incomplete, changed and ambiguous histories fail closed", async () => {
   const f = fixture()
@@ -267,6 +279,7 @@ test("a newly journaled order needs no account-wide shipment scan", async () => 
 test("a saved reference narrows inspection and remains stable if a create response was lost", async () => {
   const f = fixture(2),
     hint = retryReference(expected.order_id, 1)
+  f.remotes[1].status = "CANCELED"
   const result = await recoverFulfillmentAttempt(f.api, {
     ...input(),
     reference_hint: hint,
@@ -299,22 +312,22 @@ test("cancelled booked shipments never imply refunded shipping budget", async ()
   )
   assert(!f.calls.some((c) => c.method === "POST"))
 })
-test("cancellation readback must preserve an unbooked shipment identity", async () => {
-  for (const change of ["awb", "identity", "missing"]) {
-    const f = fixture(),
-      post = f.api.post
-    f.api.post = async (path, body) => {
-      const result = await post(path, body)
-      if (change === "awb") f.remotes[0].shipments.awb = "unexpected-awb"
-      else if (change === "identity") f.remotes[0].shipments.id = 999
-      else f.remotes[0].shipments = null as any
-      return result
-    }
-    await assert.rejects(
-      recoverFulfillmentAttempt(f.api, input()),
-      /not confirmed/
-    )
-  }
+test("a same-reference retry waits for a late AWB and then reuses it without any carrier write", async () => {
+  const f = fixture()
+  const wanted = { ...input(), reference_hint: expected.order_id }
+  await assert.rejects(
+    recoverFulfillmentAttempt(f.api, wanted),
+    /assignment is still unconfirmed/
+  )
+  assert.equal(f.remotes[0].status, "NEW")
+  f.remotes[0].shipments.awb = "LATE_VERIFIED_AWB"
+  f.remotes[0].shipments.courier_company_id = 8
+  const recovered = await recoverFulfillmentAttempt(f.api, wanted)
+  assert.equal(recovered.reference, expected.order_id)
+  assert.equal(recovered.resume?.order_id, 100)
+  assert.equal(recovered.resume?.shipment_id, 42)
+  assert.deepEqual(recovered.cancelled_order_ids, [])
+  assert(!f.calls.some((c) => c.method === "POST"))
 })
 
 test("recovery reuses the verified booked parcel with original declared weight despite a rounded readback", async () => {
@@ -377,13 +390,25 @@ test("buyer-data permissions block recovery with actionable guidance before canc
 })
 
 test("read-only cancellation verification returns the original base and next safe reference without any write callback", async () => {
-  for (const [status, status_code] of [["CANCELED", 5], ["Canceled before Dispatched", 54], [5, 5]]) {
+  for (const [status, status_code] of [
+    ["CANCELED", 5],
+    ["Canceled before Dispatched", 54],
+    [5, 5],
+  ]) {
     const f = fixture()
     f.remotes[0].status = status
     f.remotes[0].status_code = status_code
-    const result = await recoverFulfillmentAttempt(f.api, {
-      ...input(), reference_hint: expected.order_id, allow_cancel: false,
-    }, () => { throw Error("Read-only verification invoked a write callback") })
+    const result = await recoverFulfillmentAttempt(
+      f.api,
+      {
+        ...input(),
+        reference_hint: expected.order_id,
+        allow_cancel: false,
+      },
+      () => {
+        throw Error("Read-only verification invoked a write callback")
+      }
+    )
     assert.equal(result.base_reference, expected.order_id)
     assert.equal(result.reference, retryReference(expected.order_id, 1))
     assert.equal(result.verified_attempts, 1)
@@ -393,13 +418,28 @@ test("read-only cancellation verification returns the original base and next saf
 })
 
 test("read-only cancellation verification cannot turn active, booked, missing or contradictory records into permission to switch", async () => {
-  for (const kind of ["active", "booked", "pending", "linked", "missing", "identity", "contradiction"]) {
+  for (const kind of [
+    "active",
+    "booked",
+    "pending",
+    "linked",
+    "missing",
+    "identity",
+    "contradiction",
+  ]) {
     const f = fixture(kind === "missing" ? 0 : 1)
-    const i = { ...input(), reference_hint: expected.order_id, allow_cancel: false }
+    const i = {
+      ...input(),
+      reference_hint: expected.order_id,
+      allow_cancel: false,
+    }
     if (f.remotes.length) f.remotes[0].status = "CANCELED"
     if (kind === "active") f.remotes[0].status = "NEW"
     if (kind === "booked") f.remotes[0].shipments.awb = "PREVIOUSLY-BOOKED"
-    if (kind === "pending") { f.remotes[0].status = 18; f.remotes[0].status_code = 18 }
+    if (kind === "pending") {
+      f.remotes[0].status = 18
+      f.remotes[0].status_code = 18
+    }
     if (kind === "linked") i.protected_order_ids = [100]
     if (kind === "identity") f.remotes[0].channel_order_id = "foreign"
     if (kind === "contradiction") f.remotes[0].status_code = 1
@@ -409,23 +449,64 @@ test("read-only cancellation verification cannot turn active, booked, missing or
 })
 
 test("read-only cancellation verification requires the exact saved reference and rejects a no-history shortcut", async () => {
-  for (const patch of [{ reference_hint: undefined }, { no_previous_attempt: true }, { reference_hint: "foreign" }]) {
+  for (const patch of [
+    { reference_hint: undefined },
+    { no_previous_attempt: true },
+    { reference_hint: "foreign" },
+  ]) {
     const f = fixture()
-    await assert.rejects(recoverFulfillmentAttempt(f.api, {
-      ...input(), reference_hint: expected.order_id, allow_cancel: false, ...patch,
-    }))
+    await assert.rejects(
+      recoverFulfillmentAttempt(f.api, {
+        ...input(),
+        reference_hint: expected.order_id,
+        allow_cancel: false,
+        ...patch,
+      })
+    )
     assert.equal(f.calls.length, 0)
   }
 })
 
 test("read-only cancellation handoff rejects historical booking or pickup markers even after the AWB was cleared", async () => {
-  for (const marker of ["awb_assign_date", "awb_assigned_date", "pickup_scheduled_date", "pickup_generated_date"]) {
+  for (const marker of [
+    "awb_assign_date",
+    "awb_assigned_date",
+    "pickup_scheduled_date",
+    "pickup_generated_date",
+  ]) {
     const f = fixture()
     f.remotes[0].status = "CANCELED"
     f.remotes[0].shipments[marker] = "2026-11-16 12:00:00"
-    await assert.rejects(recoverFulfillmentAttempt(f.api, {
-      ...input(), reference_hint: expected.order_id, allow_cancel: false,
-    }), /booking or pickup history/)
+    await assert.rejects(
+      recoverFulfillmentAttempt(f.api, {
+        ...input(),
+        reference_hint: expected.order_id,
+        allow_cancel: false,
+      }),
+      /booking or pickup history/
+    )
+    assert(!f.calls.some((call) => call.method === "POST"))
+  }
+})
+
+test("normal recovery cannot advance a cancelled reference with booking or pickup history after the AWB was cleared", async () => {
+  for (const marker of [
+    "awb_assign_date",
+    "awb_assigned_date",
+    "pickup_scheduled_date",
+    "pickup_generated_date",
+  ]) {
+    const f = fixture()
+    f.remotes[0].status = "CANCELED"
+    f.remotes[0].shipments.awb = ""
+    f.remotes[0].shipments[marker] = "2026-11-17 01:59:49"
+    await assert.rejects(
+      recoverFulfillmentAttempt(f.api, {
+        ...input(),
+        reference_hint: expected.order_id,
+      }),
+      /booking or pickup history.*carrier cost\/refund/
+    )
     assert(!f.calls.some((call) => call.method === "POST"))
   }
 })

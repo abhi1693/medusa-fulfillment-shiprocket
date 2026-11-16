@@ -1,4 +1,5 @@
 import { paidPackedUnitPlan, selectPackedUnit } from "./packed-unit-plan"
+import { fulfillmentCourier } from "./fulfillment-courier"
 import { orderShipmentAllocation } from "./order-shipment-allocation"
 import type { ExistingOrderBinding } from "./existing-order"
 import { financialSnapshot, type FulfillmentFinancials } from "./order-money"
@@ -39,6 +40,7 @@ export async function prepareFulfillmentPickup(
   input: {
     shipping_option_id?: string
     location_id?: string
+    package_id?: string
     additional_data?: Record<string, unknown>
     items?: { id: string; quantity: number }[]
   },
@@ -209,36 +211,41 @@ export async function prepareFulfillmentPickup(
         plan,
         allocatedLines || order.items || [],
         input.items || [],
-        optionId
+        optionId,
+        input.package_id
       )
     : undefined
-  const override = order.metadata?.shiprocket_fulfillment_couriers?.[optionId]
-  let courier = unit?.courier || quote
-  if (override && !unit) {
-    if (
-      override.scope !== scope ||
-      override.location_id !== locationId ||
-      override.service !== quote.service ||
-      !["air", "surface"].includes(override.service) ||
-      !Number.isSafeInteger(override.courier_company_id) ||
-      override.courier_company_id <= 0
-    )
-      return invalid(
-        "The merchant courier selection does not match this delivery. Select an available courier again."
-      )
-    courier = {
-      ...quote,
-      courier_company_id: override.courier_company_id,
-      courier_name: override.courier_name,
-      amount: override.amount,
-    }
-  }
+  if (input.package_id !== undefined && !unit)
+    return invalid("The selected shipping package is no longer available")
+  const courier = fulfillmentCourier(
+    order.metadata,
+    {
+      shipping_option_id: optionId,
+      location_id: locationId,
+      scope,
+      package_id: unit?.id,
+    },
+    unit?.courier || quote
+  )
+  const merchantSelection = unit
+    ? order.metadata?.shiprocket_package_couriers?.[unit.id]
+    : order.metadata?.shiprocket_fulfillment_couriers?.[optionId]
   const body = Buffer.from(
     JSON.stringify({
       order: orderId,
       option: optionId,
       pickup,
       courier,
+      // Only a validated instruction in merchant-owned order metadata can
+      // authorize its reviewed price. Customer quote fields cannot set this.
+      merchant_courier_selection:
+        merchantSelection === undefined
+          ? undefined
+          : {
+              courier_company_id: courier.courier_company_id,
+              service: courier.service,
+              amount: courier.amount,
+            },
       attempt_id: input.additional_data?.shiprocket_attempt_id,
       parcel: unit
         ? { ...unit.measurements, items: input.items }
@@ -285,6 +292,11 @@ export function readFulfillmentContext(
   pickup: PickupSnapshot
   package_id?: string
   courier?: Record<string, any>
+  merchant_courier_selection?: {
+    courier_company_id: number
+    service: string
+    amount: number
+  }
   item_measurements: Record<string, ShippingMeasurements>
   shipping_charge?: Record<string, any>
   attempt_id?: string
@@ -318,6 +330,7 @@ export function readFulfillmentContext(
     return {
       pickup: requirePickupSnapshot(claim.pickup, locationId, scope),
       courier: claim.courier,
+      merchant_courier_selection: claim.merchant_courier_selection,
       package_id: claim.package_id,
       shipping_charge: claim.shipping_charge,
       attempt_id: claim.attempt_id,
