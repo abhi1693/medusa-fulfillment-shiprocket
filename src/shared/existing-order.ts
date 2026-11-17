@@ -1,3 +1,7 @@
+import {
+  isCancelledOrderStatus,
+  isPendingOrderCancellation,
+} from "./order-cancellation"
 import { indiaStateName } from "./india-state"
 import { MedusaError } from "@medusajs/framework/utils"
 import { createHash } from "node:crypto"
@@ -87,16 +91,44 @@ export function reviewExistingOrder(
   const status = String(remote?.status ?? "")
     .toUpperCase()
     .replace(/_/g, " ")
-  check(["NEW", "AWB ASSIGNED"].includes(status), "order_status")
+  const awb = String(shipment?.awb || shipment?.awb_code || "").trim()
+  // Shiprocket uses distinct order/shipment namespaces after AWB assignment.
+  // READY TO SHIP (order 3) and shipment 1 are pre-pickup states, not cancellation.
   check(
-    ["NEW", "PENDING", "AWB ASSIGNED"].includes(
-      String(shipment?.status ?? "")
-        .toUpperCase()
-        .replace(/_/g, " ")
-    ),
+    ["NEW", "AWB ASSIGNED"].includes(status) ||
+      (!!awb && status === "READY TO SHIP"),
+    "order_status"
+  )
+  const shipmentStatus = String(shipment?.status ?? "")
+    .toUpperCase()
+    .replace(/_/g, " ")
+  check(
+    ["NEW", "PENDING", "AWB ASSIGNED"].includes(shipmentStatus) ||
+      (!!awb && ["1", "2", "LABEL GENERATED"].includes(shipmentStatus)),
     "shipment_status"
   )
-  const awb = String(shipment?.awb || shipment?.awb_code || "")
+  check(
+    ![5, 18, 54].includes(
+      Number(remote?.status_code ?? remote?.status_id ?? remote?.status)
+    ) &&
+      !isCancelledOrderStatus(remote?.status, remote?.status_code) &&
+      !isPendingOrderCancellation(remote?.status, remote?.status_code),
+    "order_cancellation"
+  )
+  check(
+    ![8, 16].includes(Number(shipment?.status_id ?? shipment?.status)) &&
+      ![8, 16].includes(
+        Number(shipmentDetail?.status_id ?? shipmentDetail?.status)
+      ) &&
+      !/cancel/i.test(String(shipmentDetail?.status ?? "")),
+    "shipment_cancellation"
+  )
+  check(
+    ![shipment, shipmentDetail].some(
+      (s) => s?.pickup_generated_date || s?.pickup_scheduled_date
+    ),
+    "pickup_state"
+  )
   const assignedCourier = Number(
     shipment?.courier_company_id ||
       shipment?.courier_id ||

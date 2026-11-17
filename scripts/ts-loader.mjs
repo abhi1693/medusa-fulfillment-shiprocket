@@ -31,6 +31,12 @@ export async function resolve(specifier, context, defaultResolve) {
       const baseDir = path.dirname(parentPath)
       const targetPath = path.resolve(baseDir, specifier)
 
+      // NodeNext source uses .js specifiers that compile from TypeScript.
+      if (targetPath.endsWith(".js")) {
+        const source = targetPath.slice(0, -3) + ".ts"
+        if (fs.existsSync(source)) return defaultResolve(pathToFileURL(source).href, context)
+      }
+
       for (const ext of EXTENSIONS) {
         const candidate = targetPath + ext
         if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {

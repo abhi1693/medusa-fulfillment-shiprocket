@@ -1,3 +1,4 @@
+import { shiprocketTimeout } from "../providers/shiprocket/client/config"
 import type { ShiprocketClientOptions } from "../providers/shiprocket/client/types"
 import test from "node:test"
 import assert from "node:assert/strict"
@@ -329,9 +330,17 @@ test("explicit timeout is honored and isolated from the cached default client", 
   }).getAxios()
   assert.equal(short.defaults.timeout, 15000)
   assert.notEqual(slow, short)
-  for (const timeout of [0, -1, NaN, Infinity, 60001, 1000.5])
+  for (const timeout of [0, -1, NaN, Infinity, 300001, 1000.5])
     assert.throws(
       () => getShiprocketManager(undefined, { ...options, timeout }),
       /timeout must be/
     )
+})
+
+test("shared timeout defaults to 60 seconds and accepts explicit configuration up to 5 minutes", () => {
+  assert.equal(shiprocketTimeout(60000), 60000)
+  assert.equal(shiprocketTimeout("90000"), 90000)
+  assert.equal(shiprocketTimeout(300000), 300000)
+  for (const value of [0, "", "invalid", 300001, 1000.5])
+    assert.throws(() => shiprocketTimeout(value), /timeout must be/)
 })

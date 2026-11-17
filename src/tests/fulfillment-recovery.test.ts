@@ -510,3 +510,24 @@ test("normal recovery cannot advance a cancelled reference with booking or picku
     assert(!f.calls.some((call) => call.method === "POST"))
   }
 })
+
+test("manual AWB mode can resume only one fully verified unassigned draft without carrier writes", async () => {
+  const f = fixture()
+  const recovered = await recoverFulfillmentAttempt(f.api, {
+    ...input(),
+    allow_unassigned_resume: true,
+  })
+  assert.equal(recovered.resume?.order_id, 100)
+  assert.equal(recovered.resume?.shipment_id, 42)
+  assert.equal(recovered.resume?.merchant_reference, expected.order_id)
+  assert.ok(recovered.resume?.review_digest)
+  assert.ok(!f.calls.some((c) => c.method === "POST"))
+  const ambiguous = fixture(2)
+  await assert.rejects(
+    recoverFulfillmentAttempt(ambiguous.api, {
+      ...input(),
+      allow_unassigned_resume: true,
+    }),
+    /Multiple active/
+  )
+})

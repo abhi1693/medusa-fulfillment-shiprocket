@@ -50,6 +50,9 @@ type Options = CourierPolicyOptions & {
   password?: string
   cod?: 0 | 1 | "true" | "false"
   timeout?: number
+  verify_documents?: boolean
+  auto_assign_awb?: boolean
+  assignment_secret?: string
 }
 
 class ShipRocketFulfillmentProviderService extends AbstractFulfillmentProviderService {
@@ -91,6 +94,9 @@ class ShipRocketFulfillmentProviderService extends AbstractFulfillmentProviderSe
       mode: options.mode,
       password: options.password,
       timeout: options.timeout,
+      auto_assign_awb: options.auto_assign_awb,
+      verify_documents: options.verify_documents,
+      assignment_secret: options.assignment_secret,
       logger: logger,
     })
 
@@ -271,8 +277,13 @@ class ShipRocketFulfillmentProviderService extends AbstractFulfillmentProviderSe
           `Shipment ID: ${externalData.shipment_id}, AWB: ${externalData.awb}`
       )
 
-      const { label, manifest, invoice } =
-        await this.client.createDocuments(externalData)
+      const documents =
+        this.options_.auto_assign_awb === false
+          ? { label: "", manifest: "", invoice: "", status: undefined }
+          : await this.client.createDocuments(externalData, {
+              awbConfirmed: !!externalData.awb,
+            })
+      const { label, manifest, invoice } = documents
 
       // Only include label if it was successfully generated
       const labelsEntry = externalData.tracking_number
@@ -289,6 +300,10 @@ class ShipRocketFulfillmentProviderService extends AbstractFulfillmentProviderSe
         data: {
           ...((fulfillment as object) || {}),
           ...externalData,
+          label_url: label,
+          invoice_url: invoice,
+          manifest_url: manifest,
+          shiprocket_document_status: documents.status,
           ...(context.package_id
             ? {
                 shiprocket_package_id: context.package_id,

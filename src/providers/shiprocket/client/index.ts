@@ -1,3 +1,16 @@
+import {
+  checkDocument,
+  type DocumentCheck,
+} from "../../../shared/document-download"
+import {
+  assignmentSecret,
+  sealAssignment,
+  openAssignment,
+  DeferredAwbError,
+} from "../../../shared/deferred-awb"
+import { pickupScope } from "../../../shared/pickup-mapping"
+import { shiprocketApiUrl } from "./config"
+import { SHIPROCKET_DEFAULT_TIMEOUT_MS } from "./config"
 import { awbErrorDiagnostic, awbErrorSummary } from "../../../shared/awb-error"
 import { cancelFailedAwbOrder } from "../../../shared/failed-awb"
 import { createHash } from "node:crypto"
@@ -64,6 +77,11 @@ import type {
 
 export default class ShiprocketClient {
   private policy: CourierPolicy
+  private requestTimeout: number
+  private verifyDocuments: boolean
+  private autoAssignAwb: boolean
+  private assignmentKey?: string
+  private accountScope: string
   private email: string
   private password: string
   private axios: AxiosInstance
@@ -80,6 +98,18 @@ export default class ShiprocketClient {
       )
     }
 
+    this.requestTimeout = options.timeout ?? SHIPROCKET_DEFAULT_TIMEOUT_MS
+    this.verifyDocuments = options.verify_documents ?? false
+    this.autoAssignAwb = options.auto_assign_awb ?? true
+    if (typeof this.autoAssignAwb !== "boolean")
+      throw Error("auto_assign_awb must be boolean")
+    this.assignmentKey = !this.autoAssignAwb
+      ? assignmentSecret(options.assignment_secret)
+      : options.assignment_secret
+    this.accountScope = pickupScope(
+      shiprocketApiUrl(options.mode),
+      options.email || process.env.SHIPROCKET_EMAIL || ""
+    )
     this.policy = courierPolicy(options)
     this.email = options.email || ""
     this.password = options.password || ""
@@ -697,17 +727,34 @@ export default class ShiprocketClient {
     return { orderData, selectedQuote, money }
   }
 
-  private async existingRemote(binding: ExistingOrderBinding) {
+  private async existingRemote(
+    binding: ExistingOrderBinding,
+    timeout?: number
+  ) {
     validateExistingBinding(binding)
+    const deadline = timeout ? Date.now() + timeout : undefined
+    const readOptions = () => {
+      if (!deadline) return undefined
+      const remaining = deadline - Date.now()
+      if (remaining <= 0)
+        throw new Error("Shiprocket recovery read budget exhausted")
+      return { timeout: remaining }
+    }
     const api = await this.getSharedAxios(),
-      response = await api.get(`/orders/show/${binding.order_id}`)
+      response = await api.get(
+        `/orders/show/${binding.order_id}`,
+        readOptions()
+      )
     const remote = response.data?.data ?? response.data
     let detail: any
     if (
       /[xX*]/.test(String(remote?.customer_phone ?? "")) ||
       !String(remote?.customer_phone ?? "").replace(/\D/g, "")
     ) {
-      const shipment = await api.get(`/shipments/${binding.shipment_id}`)
+      const shipment = await api.get(
+        `/shipments/${binding.shipment_id}`,
+        readOptions()
+      )
       detail = shipment.data?.data ?? shipment.data
     }
     return { body: response.data, detail }
@@ -774,6 +821,7 @@ export default class ShiprocketClient {
         pickup_id: args[3].external_id,
         courier_id: prepared.selectedQuote.courier_company_id,
         protected_order_ids: protectedOrderIds,
+        allow_unassigned_resume: !this.autoAssignAwb,
         ...history,
       },
       beforeWrite
@@ -794,10 +842,22 @@ export default class ShiprocketClient {
     resume?: ExistingOrderBinding,
     recoveryReference?: string
   ): Promise<ShiprocketCreateOrderResponse> {
+    if (
+      !this.autoAssignAwb &&
+      (typeof fulfillment?.id !== "string" ||
+        !fulfillment.id ||
+        fulfillment.id.length > 128)
+    )
+      throw new MedusaError(
+        MedusaError.Types.INVALID_DATA,
+        "A native fulfillment ID is required before creating a manual AWB draft"
+      )
     let creationRequested = false
     let failedAwbInput: Parameters<typeof cancelFailedAwbOrder>[1] | undefined
     let awbRequested = false
     let awbPresent = false
+    let awbRecoveryAttempted = false
+    let awbRecovered = false
     let awbRejectionConfirmed = false
     let awbDiagnostic: ReturnType<typeof awbErrorDiagnostic> | undefined
     const sensitiveValues: unknown[] = [this.email, this.password, this.token]
@@ -920,6 +980,60 @@ export default class ShiprocketClient {
           courier_id: selectedQuote.courier_company_id,
         }
       }
+      if (!this.autoAssignAwb && !existingReview?.awb) {
+        const binding = failedAwbInput?.binding ?? resume
+        if (!binding)
+          throw new Error("Shiprocket draft identity could not be verified")
+        return {
+          ...orderCreated.data,
+          shiprocket_merchant_reference: merchantReference,
+          shiprocket_financials: money.summary,
+          shiprocket_awb_state: "pending",
+          ...(resume
+            ? {
+                shiprocket_reconciled_existing: true,
+                shiprocket_native_order_id: order.id,
+                shiprocket_native_selection: money.items.map((line) => ({
+                  id: line.line_item_id,
+                  quantity: line.units,
+                })),
+                shiprocket_reconciliation_digest: resume.review_digest,
+                shiprocket_resume_transaction_id:
+                  resume.workflow_transaction_id,
+                shiprocket_reconciliation_warnings:
+                  existingReview?.warnings || [],
+              }
+            : {}),
+          shiprocket_deferred_awb: sealAssignment(
+            {
+              binding,
+              order_data: orderData,
+              pickup_id: pickup.external_id,
+              native_order_id: order.id,
+              scope: this.accountScope,
+              quote: selectedQuote,
+              quote_request: {
+                pickup_postcode: pickup.postcode,
+                delivery_postcode: String(orderData.shipping_pincode),
+                weight: orderData.weight,
+                length: orderData.length,
+                breadth: orderData.breadth,
+                height: orderData.height,
+                cod: 0,
+              },
+            },
+            String(fulfillment.id || ""),
+            this.assignmentKey!
+          ),
+          courier_name: selectedQuote.courier_name,
+          shiprocket_carrier_cost: {
+            amount: selectedQuote.amount,
+            currency_code: "inr",
+            courier_company_id: selectedQuote.courier_company_id,
+            service: selectedQuote.service,
+          },
+        }
+      }
       awbRequested = !existingReview?.awb
       const awbCreated = existingReview?.awb
         ? {
@@ -935,11 +1049,80 @@ export default class ShiprocketClient {
           }
         : await (
             await this.getSharedAxios()
-          ).post("/courier/assign/awb", awbPayload, {
-            // Assignment can take a minute; keep other API calls on their normal timeout.
-            timeout: 90000,
-            shiprocket_order_id: order.id,
-          } as any)
+          )
+            .post("/courier/assign/awb", awbPayload, {
+              timeout: this.requestTimeout,
+              shiprocket_order_id: order.id,
+            } as any)
+            .catch(async (error: any) => {
+              const uncertain =
+                !error?.response ||
+                [408, 500, 502, 503, 504].includes(error.response.status)
+              const binding = failedAwbInput?.binding ?? resume
+              if (!uncertain || !binding) throw error
+              awbRecoveryAttempted = true
+              // Never replay assignment. All reads share one configured timeout budget.
+              const deadline = Date.now() + this.requestTimeout
+              for (const delay of [0, 1000, 3000]) {
+                if (Date.now() + delay >= deadline) break
+                if (delay)
+                  await new Promise((resolve) => setTimeout(resolve, delay))
+                try {
+                  const response = await this.existingRemote(
+                    binding,
+                    deadline - Date.now()
+                  )
+                  const review = reviewExistingOrder(
+                    response.body,
+                    orderData,
+                    pickup.external_id,
+                    binding,
+                    order.id,
+                    selectedQuote.courier_company_id,
+                    response.detail
+                  )
+                  if (review.ready && review.awb) {
+                    awbRecovered = true
+                    this.logger?.info(
+                      "Shiprocket AWB recovered after uncertain assignment " +
+                        JSON.stringify({
+                          order_id: order.id,
+                          remote_order_id: binding.order_id,
+                          shipment_id: binding.shipment_id,
+                          http_status: error?.response?.status,
+                        })
+                    )
+                    return {
+                      data: {
+                        awb_assign_status: 1,
+                        response: {
+                          data: {
+                            awb_code: review.awb,
+                            courier_company_id: review.courier_company_id,
+                            courier_name: selectedQuote.courier_name,
+                          },
+                        },
+                      },
+                    }
+                  }
+                  // Stop on cancellation/pickup evidence. Other incomplete reads may settle,
+                  // but an AWB is adopted only after every verification check passes.
+                  if (
+                    review.issues.some((issue) =>
+                      [
+                        "order_cancellation",
+                        "shipment_cancellation",
+                        "pickup_state",
+                      ].includes(issue)
+                    )
+                  )
+                    break
+                } catch {
+                  // A failed read leaves the result uncertain; the existing safe failure path retains it.
+                }
+              }
+              throw error
+            })
 
       const awbStatus = awbCreated.data?.awb_assign_status
       const responseBody = awbCreated.data?.response?.data
@@ -1046,6 +1229,7 @@ export default class ShiprocketClient {
         ...orderCreated.data,
         shiprocket_financials: money.summary,
         shiprocket_merchant_reference: merchantReference,
+        ...(awbRecovered ? { shiprocket_awb_recovered: true } : {}),
         ...(resume
           ? {
               shiprocket_reconciled_existing: true,
@@ -1108,6 +1292,8 @@ export default class ShiprocketClient {
         const { binding } = failedAwbInput
         let verifiedAwb = ""
         try {
+          if (awbRecoveryAttempted)
+            throw Error("Bounded readback already exhausted")
           const response = await this.existingRemote(binding)
           const review = reviewExistingOrder(
             response.body,
@@ -1183,6 +1369,152 @@ export default class ShiprocketClient {
     }
   }
 
+  /** Assign only a saved, verified native draft. No order creation, cancellation or pickup. */
+  async assignDeferredAwb(
+    data: any,
+    fulfillmentId: string,
+    options: {
+      pending: boolean
+      beforeAssign: () => Promise<void>
+    }
+  ) {
+    const snapshot = openAssignment(
+      data.shiprocket_deferred_awb,
+      fulfillmentId,
+      this.assignmentKey ?? assignmentSecret()
+    )
+    const binding = snapshot.binding as ExistingOrderBinding
+    validateExistingBinding(binding)
+    if (
+      snapshot.scope !== this.accountScope ||
+      Number(data.order_id) !== binding.order_id ||
+      Number(data.shipment_id) !== binding.shipment_id
+    )
+      throw new DeferredAwbError(
+        "Shipment assignment ownership does not match this account"
+      )
+    const verify = async (budget = this.requestTimeout) => {
+      const remote = await this.existingRemote(binding, budget)
+      return reviewExistingOrder(
+        remote.body,
+        snapshot.order_data,
+        snapshot.pickup_id,
+        binding,
+        snapshot.native_order_id,
+        snapshot.quote.courier_company_id,
+        remote.detail
+      )
+    }
+    const result = (awb: string, amount = snapshot.quote.amount) => ({
+      awb,
+      tracking_number: awb,
+      tracking_url: `https://shiprocket.co/tracking/${encodeURIComponent(awb)}`,
+      courier_company_id: snapshot.quote.courier_company_id,
+      courier_name: snapshot.quote.courier_name,
+      shiprocket_awb_state: "assigned",
+      shiprocket_carrier_cost: {
+        amount,
+        currency_code: "inr",
+        courier_company_id: snapshot.quote.courier_company_id,
+        service: snapshot.quote.service,
+      },
+    })
+    const initial = await verify()
+    if (!initial.ready)
+      throw new DeferredAwbError(
+        "Shipment does not match its saved assignment: " +
+          initial.issues.join(", ")
+      )
+    if (initial.awb)
+      return result(
+        initial.awb,
+        data.shiprocket_carrier_cost?.amount ?? snapshot.quote.amount
+      )
+    if (options.pending)
+      throw new DeferredAwbError(
+        "The earlier AWB request is unresolved. Sync this same shipment before another assignment.",
+        true
+      )
+    const quote = await this.quote(
+      snapshot.quote_request,
+      snapshot.quote,
+      true,
+      (actual) => {
+        if (actual.amount > snapshot.quote.amount)
+          throw Error(
+            "The carrier rate increased since fulfillment. Review the shipment before assigning an AWB."
+          )
+      }
+    )
+    await options.beforeAssign()
+    try {
+      const response = await (
+        await this.getSharedAxios()
+      ).post(
+        "/courier/assign/awb",
+        {
+          shipment_id: binding.shipment_id,
+          courier_id: snapshot.quote.courier_company_id,
+        },
+        { shiprocket_order_id: snapshot.native_order_id } as any
+      )
+      const body = response.data,
+        assigned = body?.response?.data
+      if (
+        [1, "1"].includes(body?.awb_assign_status) &&
+        typeof assigned?.awb_code === "string" &&
+        assigned.awb_code.trim() &&
+        Number(assigned.courier_company_id) ===
+          snapshot.quote.courier_company_id
+      )
+        return result(assigned.awb_code.trim(), quote.amount)
+      const reason = this.carrierFailure(body)
+      const upstream = Number(awbErrorDiagnostic(body).status_code)
+      const uncertain =
+        !!assigned?.awb_code ||
+        ![0, "0"].includes(body?.awb_assign_status) ||
+        [408, 425, 429].includes(upstream) ||
+        upstream >= 500 ||
+        /timeout|timed out|gateway/i.test(reason)
+      if (!uncertain) throw new DeferredAwbError(reason, false)
+    } catch (error: any) {
+      if (error instanceof DeferredAwbError) throw error
+      if (
+        error?.response &&
+        [400, 401, 403, 422, 429].includes(error.response.status)
+      )
+        throw new DeferredAwbError(
+          this.carrierFailure(error.response.data),
+          false
+        )
+    }
+    const deadline = Date.now() + this.requestTimeout
+    for (const delay of [0, 1000, 3000]) {
+      if (Date.now() + delay >= deadline) break
+      if (delay) await new Promise((resolve) => setTimeout(resolve, delay))
+      try {
+        const review = await verify(deadline - Date.now())
+        if (review.ready && review.awb) return result(review.awb, quote.amount)
+        if (
+          review.issues.some((issue) =>
+            [
+              "order_cancellation",
+              "shipment_cancellation",
+              "pickup_state",
+            ].includes(issue)
+          )
+        )
+          break
+      } catch {
+        /* Reads cannot authorize another assignment POST. */
+      }
+    }
+    throw new DeferredAwbError(
+      "AWB assignment is unconfirmed. Retry this same action to read back the existing shipment; no replacement was created.",
+      true
+    )
+  }
+
   /**
    * Cancel an order in Shiprocket
    */
@@ -1218,48 +1550,147 @@ export default class ShiprocketClient {
   /**
    * Schedule pickup for a shipment
    */
+  private carrierFailure(body: any): string {
+    const source = body && typeof body === "object" ? body : {}
+    return (
+      awbErrorSummary(
+        awbErrorDiagnostic(
+          {
+            ...source,
+            message:
+              typeof body === "string"
+                ? body
+                : typeof source.message === "string"
+                  ? source.message
+                  : typeof source.response === "string"
+                    ? source.response
+                    : undefined,
+          },
+          [this.email, this.password, this.token]
+        )
+      ) || "Carrier did not confirm the operation"
+    )
+  }
+
   async schedulePickup(
     shipmentId: number | string,
     date?: Date
   ): Promise<boolean> {
+    return (await this.requestPickup(shipmentId, date)).scheduled
+  }
+
+  /** Keep the carrier acknowledgement: HTTP success alone is not pickup success. */
+  async requestPickup(
+    shipmentId: number | string,
+    date?: Date
+  ): Promise<{
+    scheduled: boolean
+    message?: string
+    uncertain?: boolean
+    pickup_scheduled_date?: string
+  }> {
+    const id = Number(shipmentId)
+    if (
+      !Number.isSafeInteger(id) ||
+      id <= 0 ||
+      (date && !Number.isFinite(date.getTime()))
+    )
+      return { scheduled: false }
     try {
-      const pickupDate = date || new Date()
-
-      // Shiprocket operates on IST: format the pickup date in Asia/Kolkata,
-      // otherwise an evening-IST fulfillment formats as "yesterday" in UTC.
-      const istParts = new Intl.DateTimeFormat("en-CA", {
-        timeZone: "Asia/Kolkata",
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-      }).format(pickupDate)
-      // en-CA yields YYYY-MM-DD
-      const dStr = istParts
-      const numericShipmentId = Number(shipmentId)
-      if (!Number.isFinite(numericShipmentId)) {
-        this.logger?.warn(
-          `Shiprocket: invalid shipment_id for pickup: ${String(shipmentId)}`
-        )
-        return false
-      }
-
-      await (
+      const payload: Record<string, unknown> = { shipment_id: [id] }
+      // Omitting a date lets Shiprocket select the next available pickup slot.
+      if (date)
+        payload.pickup_date = [
+          new Intl.DateTimeFormat("en-CA", {
+            timeZone: "Asia/Kolkata",
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+          }).format(date),
+        ]
+      const res = await (
         await this.getSharedAxios()
-      ).post("/courier/generate/pickup", {
-        shipment_id: [numericShipmentId],
-        pickup_date: [dStr],
-      })
-
-      this.logger?.info(
-        `Shiprocket: Successfully scheduled pickup for shipment ${shipmentId}`
-      )
-      return true
+      ).post("/courier/generate/pickup", payload)
+      const body = res.data?.data ?? res.data
+      const scheduled = body?.pickup_status === 1
+      if (!scheduled)
+        this.logger?.warn(
+          `Shiprocket pickup not confirmed: ${this.carrierFailure(body)}`
+        )
+      return {
+        scheduled,
+        ...(!scheduled
+          ? {
+              message: this.carrierFailure(body),
+              uncertain: body?.pickup_status !== 0,
+            }
+          : {}),
+        ...(scheduled &&
+        typeof body?.response?.pickup_scheduled_date === "string"
+          ? { pickup_scheduled_date: body.response.pickup_scheduled_date }
+          : {}),
+      }
     } catch (error: any) {
-      // We only log warning instead of failing the fulfillment because the AWB is already assigned
       this.logger?.warn(
-        `Shiprocket: Failed to schedule pickup for shipment ${shipmentId}. You may need to schedule it manually in the Shiprocket dashboard. Error: ${error?.response?.data?.message || error.message}`
+        "Shiprocket pickup request failed; verify carrier state before retrying"
       )
-      return false
+      return {
+        scheduled: false,
+        uncertain: ![400, 401, 403, 422, 429].includes(error?.response?.status),
+        message: this.carrierFailure(error?.response?.data),
+      }
+    }
+  }
+
+  /** Read the exact shipment before pickup or document generation. No booking side effects. */
+  async inspectPickup(
+    fulfillment: any,
+    awb: string
+  ): Promise<{
+    scheduled: boolean
+    can_schedule: boolean
+    pickup_scheduled_date?: string
+  }> {
+    const id = Number(fulfillment.shipment_id)
+    const orderId = Number(fulfillment.sr_order_id ?? fulfillment.order_id)
+    if (
+      !Number.isSafeInteger(id) ||
+      id <= 0 ||
+      !Number.isSafeInteger(orderId) ||
+      orderId <= 0
+    )
+      throw new Error("Invalid Shiprocket shipment binding")
+    const res = await (await this.getSharedAxios()).get(`/shipments/${id}`)
+    const shipment = res.data?.data ?? res.data
+    if (
+      Number(shipment?.id) !== id ||
+      Number(shipment?.order_id) !== orderId ||
+      String(shipment?.awb ?? shipment?.awb_code ?? "") !== awb
+    )
+      throw new Error("Shiprocket shipment binding does not match fulfillment")
+    // Cancellation states must not be treated as scheduled from a retained timestamp.
+    if (
+      [8, 16].includes(Number(shipment.status_id ?? shipment.status)) ||
+      /cancel/i.test(String(shipment.status))
+    )
+      throw new Error(
+        "Shiprocket shipment is cancelled or cancellation is pending"
+      )
+    const code = Number(shipment.status_id ?? shipment.status)
+    const canSchedule =
+      [1, 2].includes(code) || /^AWB ASSIGNED$/i.test(String(shipment.status))
+    const date = shipment.pickup_scheduled_date
+    const scheduled =
+      Number(shipment.status_id ?? shipment.status) === 3 ||
+      /^(pickup generated|pickup scheduled)$/i.test(String(shipment.status)) ||
+      !!shipment.pickup_token_number ||
+      !!shipment.pickup_generated_date
+    return {
+      scheduled,
+      can_schedule: canSchedule,
+      ...(scheduled && typeof date === "string" && date
+        ? { pickup_scheduled_date: date }
+        : {}),
     }
   }
 
@@ -1385,64 +1816,115 @@ export default class ShiprocketClient {
   /**
    * Generate documents (manifest, label, invoice) for a shipment
    */
-  async createDocuments(fulfillment: any): Promise<{
+  async createDocuments(
+    fulfillment: any,
+    options: { pickupConfirmed?: boolean; awbConfirmed?: boolean } = {}
+  ): Promise<{
     manifest: string
     label: string
     invoice: string
+    status?: Record<string, DocumentCheck>
   }> {
-    // Shiprocket tolerates a document failing to generate (e.g. an AWB not yet
-    // assigned), so these calls stay non-fatal. But the failure must be
-    // visible: previously only console.error fired, so a fulfilment could
-    // silently end up with no label. Log through the module logger with a
-    // status code only — never the raw response body, which can echo the
-    // request payload containing customer PII.
-    const safePost = async (url: string, data: any) =>
-      (await this.getSharedAxios()).post(url, data).catch((err: any) => {
-        const status = err?.response?.status ?? "network"
-        this.logger?.warn?.(
-          `Shiprocket document generation failed at ${url} (${status}); ` +
-            `continuing without that document.`
-        )
-        return { data: null }
-      })
-
-    // Shiprocket expects arrays for IDs even if it's just one.
-    // NOTE: manifests are generated per Shiprocket order_id, labels per shipment_id.
-    const [manifestRes, labelRes, invoiceRes] = await Promise.all([
-      safePost("/manifests/generate", { order_ids: [fulfillment.order_id] }),
-      safePost("/courier/generate/label", {
-        shipment_id: [fulfillment.shipment_id],
-      }),
-      safePost("/orders/print/invoice", { ids: [fulfillment.order_id] }),
-    ])
-
-    const extractUrl = (
-      res: any,
+    const shipmentId = Number(fulfillment.shipment_id)
+    const orderId = Number(fulfillment.sr_order_id ?? fulfillment.order_id)
+    if (
+      !Number.isSafeInteger(shipmentId) ||
+      shipmentId <= 0 ||
+      !Number.isSafeInteger(orderId) ||
+      orderId <= 0
+    )
+      throw new Error("Valid Shiprocket order and shipment IDs are required")
+    const status: Record<string, DocumentCheck> = {}
+    const post = async (
+      path: string,
+      payload: any,
       key: string,
-      checkKey?: string,
-      checkVal?: any
-    ) => {
-      if (!res?.data) return ""
-      const item = Array.isArray(res.data) ? res.data[0] : res.data
-
-      // Handle cases where Shiprocket returns { status: 1, manifest_url: "..." }
-      const data = res.data?.data || res.data
-      const target = Array.isArray(data) ? data[0] : data
-
-      if (!target) return ""
-      if (checkKey && target[checkKey] !== checkVal) return ""
-      return target[key] || ""
+      flag: string,
+      expected: any
+    ): Promise<string> => {
+      try {
+        const res = await (await this.getSharedAxios()).post(path, payload)
+        const body = res.data?.data ?? res.data
+        const item = Array.isArray(body) ? body[0] : body
+        const value = item?.[key]
+        if ((!flag || item?.[flag] === expected) && typeof value === "string") {
+          const url = new URL(value)
+          if (url.protocol === "https:" && !url.username && !url.password) {
+            if (!this.verifyDocuments) return value
+            const checked = await checkDocument(value, this.requestTimeout)
+            status[key.replace("_url", "")] = checked
+            return checked.available ? value : ""
+          }
+        }
+        status[key.replace("_url", "")] = {
+          available: false,
+          message: this.carrierFailure(item),
+        }
+        this.logger?.warn(
+          `Shiprocket document unavailable at ${path}; carrier did not return a successful document URL; ${this.carrierFailure(item)}`
+        )
+      } catch (error: any) {
+        // Only this documented, exact already-generated shipment permits print fallback.
+        if (
+          path === "/manifests/generate" &&
+          Array.isArray(
+            error?.response?.data?.already_manifested_shipment_ids
+          ) &&
+          error.response.data.already_manifested_shipment_ids.some(
+            (id: any) => Number(id) === shipmentId
+          )
+        ) {
+          return post(
+            "/manifests/print",
+            { order_ids: [orderId] },
+            "manifest_url",
+            "",
+            undefined
+          )
+        }
+        status[key.replace("_url", "")] = {
+          available: false,
+          http_status: error?.response?.status,
+          message: this.carrierFailure(error?.response?.data),
+        }
+        this.logger?.warn(
+          `Shiprocket document unavailable at ${path} (${error?.response?.status ?? "network"}); ${this.carrierFailure(error?.response?.data)}`
+        )
+      }
+      return ""
     }
-
-    return {
-      manifest: extractUrl(manifestRes, "manifest_url", "status", 1),
-      label: extractUrl(labelRes, "label_url", "label_created", 1),
-      invoice: extractUrl(
-        invoiceRes,
+    const [manifest, label, invoice] = await Promise.all([
+      options.pickupConfirmed
+        ? post(
+            "/manifests/generate",
+            { shipment_id: [shipmentId] },
+            "manifest_url",
+            "status",
+            1
+          )
+        : Promise.resolve(""),
+      options.awbConfirmed === false
+        ? Promise.resolve("")
+        : post(
+            "/courier/generate/label",
+            { shipment_id: [shipmentId] },
+            "label_url",
+            "label_created",
+            1
+          ),
+      post(
+        "/orders/print/invoice",
+        { ids: [orderId] },
         "invoice_url",
         "is_invoice_created",
         true
       ),
+    ])
+    return {
+      manifest,
+      label,
+      invoice,
+      ...(this.verifyDocuments ? { status } : {}),
     }
   }
 
@@ -1458,7 +1940,12 @@ export default class ShiprocketClient {
       })
       const data = res.data?.data || res.data
       const item = Array.isArray(data) ? data[0] : data
-      return item?.label_url || ""
+      if (item?.label_created !== 1 || typeof item?.label_url !== "string")
+        return ""
+      const url = new URL(item.label_url)
+      return url.protocol === "https:" && !url.username && !url.password
+        ? item.label_url
+        : ""
     } catch {
       return ""
     }
@@ -1476,7 +1963,15 @@ export default class ShiprocketClient {
       })
       const data = res.data?.data || res.data
       const item = Array.isArray(data) ? data[0] : data
-      return item?.invoice_url || ""
+      if (
+        item?.is_invoice_created !== true ||
+        typeof item?.invoice_url !== "string"
+      )
+        return ""
+      const url = new URL(item.invoice_url)
+      return url.protocol === "https:" && !url.username && !url.password
+        ? item.invoice_url
+        : ""
     } catch {
       return ""
     }

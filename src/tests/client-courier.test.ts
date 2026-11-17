@@ -75,6 +75,8 @@ function setup(t: any, options: any = {}) {
   let createFailure: any
   let orderPages: any[] = []
   let existing: any
+  let orderReads = 0
+  let onRead: ((n: number, remote: any) => void) | undefined
   axios.defaults.adapter = async (config: any) => {
     calls.push({
       url: config.url,
@@ -116,8 +118,10 @@ function setup(t: any, options: any = {}) {
       data = { status: 200 }
     } else if (config.url === "/orders")
       data = orderPages[Number(config.params.page) - 1]
-    else if (config.url === "/orders/show/100") data = { data: existing }
-    else if (config.url === "/courier/generate/pickup")
+    else if (config.url === "/orders/show/100") {
+      onRead?.(++orderReads, existing)
+      data = { data: existing }
+    } else if (config.url === "/courier/generate/pickup")
       data = { pickup_status: 1 }
     else throw Error("Unexpected operation")
     return { config, data, status: 200, statusText: "OK", headers: {} }
@@ -138,6 +142,7 @@ function setup(t: any, options: any = {}) {
     setAwbResponse: (value: any) => (awbResponse = value),
     setOrderPages: (value: any[]) => (orderPages = value),
     setExisting: (value: any) => (existing = value),
+    setOnRead: (value: any) => (onRead = value),
     setRows: (value: any[]) => (rows = value),
     setCreateFailure: (value: any) => (createFailure = value),
   }
@@ -757,7 +762,7 @@ test("read-only cancellation verification requires a trusted native financial al
   assert.equal(f.calls.length, 0)
 })
 
-test("AWB assignment has 90 seconds while order creation keeps its short timeout", async (t) => {
+test("all API calls use the shared 60 second default", async (t) => {
   const f = setup(t)
   await f.client.create({}, items, order, pickup, {
     courier_company_id: 2,
@@ -765,11 +770,11 @@ test("AWB assignment has 90 seconds while order creation keeps its short timeout
   })
   assert.equal(
     f.calls.find((c) => c.url === "/courier/assign/awb").timeout,
-    90000
+    60000
   )
   assert.equal(
     f.calls.find((c) => c.url === "/orders/create/adhoc").timeout,
-    15000
+    60000
   )
 })
 for (const status of [0, "0"])
@@ -822,7 +827,7 @@ for (const status of [0, "0"])
     assert.ok(next.reference.endsWith("_r1"))
     assert.equal(next.resume, undefined)
   })
-test("a 504 assignment with a verified late AWB is retained for same-order reuse", async (t) => {
+test("a 504 assignment with a verified late AWB completes the same fulfillment", async (t) => {
   const f = setup(t),
     quote = { courier_company_id: 2, amount: 50 }
   const prepared = await f.client.prepareFulfillment(
@@ -845,10 +850,19 @@ test("a 504 assignment with a verified late AWB is retained for same-order reuse
       response: { status: 504, data: {} },
     })
   )
-  await assert.rejects(
-    () => f.client.create({}, items, order, pickup, quote),
-    /assigned an AWB to order 100, shipment 42.*unconfirmed response/
-  )
+  remote.status = "READY TO SHIP"
+  remote.status_code = 3
+  remote.shipments.status = 1
+  // The first read is still an unbooked draft; the next read exposes the assigned AWB.
+  f.setOnRead((n: number, value: any) => {
+    value.status = n === 1 ? "NEW" : "READY TO SHIP"
+    value.shipments.status = n === 1 ? "PENDING" : 1
+    value.shipments.awb = n === 1 ? "" : "ASSIGNED_WHILE_TIMED_OUT"
+  })
+  const result = await f.client.create({}, items, order, pickup, quote)
+  assert.equal(result.awb, "ASSIGNED_WHILE_TIMED_OUT")
+  assert.equal((result as any).shiprocket_awb_recovered, true)
+  assert.equal(f.calls.filter((c) => c.url === "/courier/assign/awb").length, 1)
   assert.equal(f.calls.filter((c) => c.url === "/orders/cancel").length, 0)
   assert.equal(
     f.calls.filter((c) => c.url === "/orders/create/adhoc").length,
@@ -875,7 +889,7 @@ for (const failure of [
   "rejection-status500",
   "rejection-status504",
 ]) {
-  test(`uncertain ${failure} retains its exact draft after one read and never cancels`, async (t) => {
+  test(`uncertain ${failure} retains its exact draft after bounded reads and never cancels`, async (t) => {
     const f = setup(t)
     const quote = { courier_company_id: 2, amount: 50 }
     const prepared = await f.client.prepareFulfillment(
@@ -946,7 +960,19 @@ for (const failure of [
         return true
       }
     )
-    assert.equal(f.calls.filter((c) => c.url === "/orders/show/100").length, 1)
+    assert.equal(
+      f.calls.filter((c) => c.url === "/orders/show/100").length,
+      [
+        "timeout",
+        "network",
+        "http500",
+        "http502",
+        "http503",
+        "http504",
+      ].includes(failure)
+        ? 3
+        : 1
+    )
     assert.equal(f.calls.filter((c) => c.url === "/orders/cancel").length, 0)
     assert.equal(
       f.calls.filter((c) => c.url === "/orders/create/adhoc").length,
@@ -1296,4 +1322,279 @@ test("existing-only resume rejection retains its carrier reason without cancelli
       ["/orders/cancel", "/orders/create/adhoc"].includes(c.url)
     )
   )
+})
+
+const assignmentKey = "fixture-assignment-secret-at-least-32-characters"
+test("manual fulfillment creates a bound draft without AWB or pickup, then assignment is explicit and idempotent", async (t) => {
+  const f = setup(t, {
+    auto_assign_awb: false,
+    assignment_secret: assignmentKey,
+  })
+  const quote = { courier_company_id: 2, amount: 50 }
+  const prepared = await f.client.prepareFulfillment(
+    {},
+    items,
+    order,
+    pickup,
+    quote
+  )
+  const draft = await f.client.create(
+    { id: "ful_manual" },
+    items,
+    order,
+    pickup,
+    quote
+  )
+  assert.equal(draft.shiprocket_awb_state, "pending")
+  assert.ok(draft.shiprocket_deferred_awb)
+  assert.ok(
+    !draft.shiprocket_deferred_awb.includes(order.shipping_address.first_name)
+  )
+  assert.equal(f.calls.filter((c) => c.url === "/courier/assign/awb").length, 0)
+  const remote = remoteFixture(prepared.orderData, {
+    order_id: 100,
+    shipment_id: 42,
+    merchant_reference: prepared.orderData.order_id,
+  })
+  f.setExisting(remote)
+  let writes = 0
+  const assigned = await f.client.assignDeferredAwb(draft, "ful_manual", {
+    pending: false,
+    beforeAssign: async () => {
+      writes++
+    },
+  })
+  assert.equal(assigned.awb, "FIXTURE")
+  assert.equal(writes, 1)
+  remote.status = "READY TO SHIP"
+  remote.shipments.awb = "FIXTURE"
+  remote.shipments.courier_company_id = 2
+  assert.equal(
+    (
+      await f.client.assignDeferredAwb(draft, "ful_manual", {
+        pending: true,
+        beforeAssign: async () => {
+          throw Error("Must not write")
+        },
+      })
+    ).awb,
+    "FIXTURE"
+  )
+  assert.equal(f.calls.filter((c) => c.url === "/courier/assign/awb").length, 1)
+  assert.ok(
+    !f.calls.some(
+      (c) => c.url === "/courier/generate/pickup" || c.url === "/orders/cancel"
+    )
+  )
+  const before = f.calls.length
+  await assert.rejects(
+    () =>
+      f.client.assignDeferredAwb(draft, "another_fulfillment", {
+        pending: false,
+        beforeAssign: async () => {},
+      }),
+    /could not be verified/
+  )
+  assert.equal(f.calls.length, before)
+})
+test("manual AWB assignment recovers 504 within the same action without replaying POST", async (t) => {
+  const f = setup(t, {
+    auto_assign_awb: false,
+    assignment_secret: assignmentKey,
+  })
+  const quote = { courier_company_id: 2, amount: 50 }
+  const prepared = await f.client.prepareFulfillment(
+    {},
+    items,
+    order,
+    pickup,
+    quote
+  )
+  const draft = await f.client.create(
+    { id: "ful_manual" },
+    items,
+    order,
+    pickup,
+    quote
+  )
+  const remote = remoteFixture(prepared.orderData, {
+    order_id: 100,
+    shipment_id: 42,
+    merchant_reference: prepared.orderData.order_id,
+  })
+  f.setExisting(remote)
+  f.setAwbFailure(
+    Object.assign(Error("Gateway timeout"), {
+      response: { status: 504, data: {} },
+    })
+  )
+  f.setOnRead((n: number, value: any) => {
+    if (n >= 3) {
+      value.status = "READY TO SHIP"
+      value.shipments.status = 1
+      value.shipments.awb = "MANUAL-LATE-AWB"
+      value.shipments.courier_company_id = 2
+    }
+  })
+  const assigned = await f.client.assignDeferredAwb(draft, "ful_manual", {
+    pending: false,
+    beforeAssign: async () => {},
+  })
+  assert.equal(assigned.awb, "MANUAL-LATE-AWB")
+  assert.equal(f.calls.filter((c) => c.url === "/courier/assign/awb").length, 1)
+})
+test("unresolved manual assignment retains pending state; mismatches and rate changes cannot assign", async (t) => {
+  const f = setup(t, {
+    auto_assign_awb: false,
+    assignment_secret: assignmentKey,
+  })
+  const quote = { courier_company_id: 2, amount: 50 }
+  const prepared = await f.client.prepareFulfillment(
+    {},
+    items,
+    order,
+    pickup,
+    quote
+  )
+  const draft = await f.client.create(
+    { id: "ful_manual" },
+    items,
+    order,
+    pickup,
+    quote
+  )
+  const remote = remoteFixture(prepared.orderData, {
+    order_id: 100,
+    shipment_id: 42,
+    merchant_reference: prepared.orderData.order_id,
+  })
+  f.setExisting(remote)
+  f.setAwbFailure(
+    Object.assign(Error("Gateway timeout"), {
+      response: { status: 504, data: {} },
+    })
+  )
+  await assert.rejects(
+    () =>
+      f.client.assignDeferredAwb(draft, "ful_manual", {
+        pending: false,
+        beforeAssign: async () => {},
+      }),
+    (e: any) => e.uncertain === true
+  )
+  await assert.rejects(
+    () =>
+      f.client.assignDeferredAwb(draft, "ful_manual", {
+        pending: true,
+        beforeAssign: async () => {
+          throw Error("No replay")
+        },
+      }),
+    /earlier AWB request is unresolved/
+  )
+  assert.equal(f.calls.filter((c) => c.url === "/courier/assign/awb").length, 1)
+  remote.status = "CANCELLATION REQUESTED"
+  remote.status_code = 18
+  await assert.rejects(
+    () =>
+      f.client.assignDeferredAwb(draft, "ful_manual", {
+        pending: false,
+        beforeAssign: async () => {},
+      }),
+    /does not match/
+  )
+  assert.equal(f.calls.filter((c) => c.url === "/courier/assign/awb").length, 1)
+  remote.status = "NEW"
+  delete remote.status_code
+  f.setRows([{ ...courier, rate: 51 }])
+  await assert.rejects(
+    () =>
+      f.client.assignDeferredAwb(draft, "ful_manual", {
+        pending: false,
+        beforeAssign: async () => {
+          throw Error("No cost escalation")
+        },
+      }),
+    /rate increased/
+  )
+  assert.equal(f.calls.filter((c) => c.url === "/courier/assign/awb").length, 1)
+})
+
+test("manual assignment distinguishes explicit rejection from a nested upstream timeout", async (t) => {
+  const f = setup(t, {
+    auto_assign_awb: false,
+    assignment_secret: assignmentKey,
+  })
+  const quote = { courier_company_id: 2, amount: 50 }
+  const prepared = await f.client.prepareFulfillment(
+    {},
+    items,
+    order,
+    pickup,
+    quote
+  )
+  const draft = await f.client.create(
+    { id: "ful_manual" },
+    items,
+    order,
+    pickup,
+    quote
+  )
+  f.setExisting(
+    remoteFixture(prepared.orderData, {
+      order_id: 100,
+      shipment_id: 42,
+      merchant_reference: prepared.orderData.order_id,
+    })
+  )
+  f.setAwbResponse({
+    awb_assign_status: 0,
+    response: { data: { awb_assign_error: "Insufficient balance" } },
+  })
+  await assert.rejects(
+    () =>
+      f.client.assignDeferredAwb(draft, "ful_manual", {
+        pending: false,
+        beforeAssign: async () => {},
+      }),
+    (e: any) => e.uncertain === false && /balance/.test(e.message)
+  )
+  f.setAwbResponse({
+    awb_assign_status: 0,
+    response: { data: { awb_assign_error: "Carrier gateway timed out" } },
+  })
+  await assert.rejects(
+    () =>
+      f.client.assignDeferredAwb(draft, "ful_manual", {
+        pending: false,
+        beforeAssign: async () => {},
+      }),
+    (e: any) => e.uncertain === true
+  )
+  await assert.rejects(
+    () =>
+      f.client.assignDeferredAwb(draft, "ful_manual", {
+        pending: true,
+        beforeAssign: async () => {},
+      }),
+    /earlier AWB request/
+  )
+  assert.equal(f.calls.filter((c) => c.url === "/courier/assign/awb").length, 2)
+  assert.ok(!f.calls.some((c) => c.url === "/orders/cancel"))
+})
+
+test("manual draft preflight requires a native fulfillment identity before carrier calls", async (t) => {
+  const f = setup(t, {
+    auto_assign_awb: false,
+    assignment_secret: assignmentKey,
+  })
+  await assert.rejects(
+    () =>
+      f.client.create({}, items, order, pickup, {
+        courier_company_id: 2,
+        amount: 50,
+      }),
+    /native fulfillment ID/
+  )
+  assert.equal(f.calls.length, 0)
 })

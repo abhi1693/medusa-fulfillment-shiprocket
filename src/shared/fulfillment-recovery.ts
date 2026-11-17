@@ -43,6 +43,7 @@ export async function recoverFulfillmentAttempt(
     reference_hint?: string
     no_previous_attempt?: boolean
     allow_cancel?: boolean
+    allow_unassigned_resume?: boolean
   },
   beforeWrite?: () => void
 ): Promise<{
@@ -232,12 +233,12 @@ export async function recoverFulfillmentAttempt(
       verified_attempts: found.length,
     }
   const booked = active.filter((attempt) => attempt.review.awb)
-  if (booked.length) {
+  if (booked.length || (input.allow_unassigned_resume && active.length)) {
     if (active.length !== 1)
       return invalid(
         "Multiple active shipment attempts require review; no shipment was cancelled or created"
       )
-    const { binding, review } = booked[0]
+    const { binding, review } = booked[0] ?? active[0]
     return {
       reference: binding.merchant_reference,
       resume: { ...binding, review_digest: review.digest },

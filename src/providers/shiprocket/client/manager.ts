@@ -127,10 +127,10 @@ class ShiprocketClientManager {
       "test"
     const policy = courierPolicy(options)
     const timeout = options.timeout ?? SHIPROCKET_DEFAULT_TIMEOUT_MS
-    if (!Number.isSafeInteger(timeout) || timeout < 1000 || timeout > 60000)
+    if (!Number.isSafeInteger(timeout) || timeout < 1000 || timeout > 300000)
       throw new MedusaError(
         MedusaError.Types.INVALID_DATA,
-        "Shiprocket timeout must be an integer from 1000 to 60000 milliseconds"
+        "Shiprocket timeout must be an integer from 1000 to 300000 milliseconds"
       )
     const resolved = {
       timeout,

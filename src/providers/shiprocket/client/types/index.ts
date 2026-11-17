@@ -7,6 +7,9 @@ export interface ShiprocketClientOptions extends importPolicy {
   email?: string
   password?: string
   timeout?: number
+  verify_documents?: boolean
+  auto_assign_awb?: boolean
+  assignment_secret?: string
   logger?: Logger
 }
 
@@ -53,6 +56,8 @@ export interface ShiprocketCalculateRateResponse {
 }
 
 export interface ShiprocketCreateOrderResponse {
+  shiprocket_deferred_awb?: string
+  shiprocket_awb_state?: "pending" | "assigned"
   shiprocket_reconciled_existing?: boolean
   shiprocket_native_order_id?: string
   shiprocket_resume_transaction_id?: string

@@ -405,3 +405,46 @@ test("foreign shipment details cannot establish a buyer-data permission diagnosi
   assert(result.issues.includes("recipient.phone_unverifiable"))
   assert(!result.warnings.includes("buyer_details_access_denied"))
 })
+
+test("READY TO SHIP and numeric AWB shipment status require a verified AWB and reject cancellation or pickup history", () => {
+  const remote = remoteFixture(expected, binding)
+  remote.status = "READY TO SHIP"
+  remote.status_code = 3
+  remote.shipments.status = 1
+  assert.equal(review(remote).ready, false)
+  remote.shipments.awb = "VERIFIED-AWB"
+  remote.shipments.courier_company_id = 2
+  assert.equal(review(remote).ready, true)
+  remote.shipments.status = 2
+  assert.equal(review(remote).ready, true)
+  remote.shipments.status = "LABEL GENERATED"
+  assert.equal(review(remote).ready, true)
+  remote.shipments.status = 1
+  for (const mutate of [
+    (r: any) => {
+      r.status_code = 18
+    },
+    (r: any) => {
+      r.status_code = 5
+    },
+    (r: any) => {
+      r.shipments.status_id = 16
+    },
+    (r: any) => {
+      r.shipments.status_id = 8
+    },
+    (r: any) => {
+      r.shipments.pickup_generated_date = "2026-11-17"
+    },
+    (r: any) => {
+      r.shipments.courier_company_id = 99
+    },
+    (r: any) => {
+      r.channel_order_id = "foreign"
+    },
+  ]) {
+    const unsafe = structuredClone(remote)
+    mutate(unsafe)
+    assert.equal(review(unsafe).ready, false)
+  }
+})
