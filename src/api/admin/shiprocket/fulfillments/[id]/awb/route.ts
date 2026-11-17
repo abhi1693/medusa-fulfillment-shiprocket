@@ -5,9 +5,12 @@ import type {
 import ShiprocketClient from "../../../../../../providers/shiprocket/client/index.js"
 import { DeferredAwbError } from "../../../../../../shared/deferred-awb"
 import { fail, ok } from "../../../../../../shared/http"
-export const POST = async (
+import { randomUUID } from "node:crypto"
+export const runAwbAction = async (
   req: AuthenticatedMedusaRequest,
-  res: MedusaResponse
+  res: MedusaResponse,
+  readOnly = false,
+  retry = false
 ) => {
   const { id } = req.params
   if (!id || id.length > 128)
@@ -46,6 +49,26 @@ export const POST = async (
             "SHIPMENT_STATE",
             "This fulfillment was already marked shipped. Review it before assigning an AWB."
           )
+        if (retry) {
+          const check = fulfillment.data?.shiprocket_awb_check
+          const token = (req.body as any)?.retry_token
+          if (
+            !req.auth_context?.actor_id ||
+            !fulfillment.data?.shiprocket_awb_pending ||
+            !check ||
+            check.id !== token ||
+            check.attempt_id !==
+              (fulfillment.data?.shiprocket_awb_attempt_id ?? null) ||
+            !Number.isFinite(Date.parse(check.checked_at)) ||
+            Date.now() - Date.parse(check.checked_at) > 300000
+          )
+            return fail(
+              res,
+              409,
+              "AWB_RECHECK_REQUIRED",
+              "Check AWB status again before confirming a retry. The shipment changed or the previous check expired."
+            )
+        }
         const client = new ShiprocketClient({
           email: process.env.SHIPROCKET_EMAIL,
           password: process.env.SHIPROCKET_PASSWORD,
@@ -59,10 +82,47 @@ export const POST = async (
             fulfillment.data,
             id,
             {
-              pending: fulfillment.data?.shiprocket_awb_pending === true,
+              pending:
+                readOnly ||
+                (!retry && fulfillment.data?.shiprocket_awb_pending === true),
+              verifyBeforeAssign: retry,
               beforeAssign: async () => {
+                const current = await service.retrieveFulfillment(id)
+                if (current.canceled_at || current.data?.awb)
+                  throw new DeferredAwbError(
+                    "Shipment changed before AWB assignment. Check its status again."
+                  )
+                if (
+                  retry &&
+                  (current.data?.shiprocket_awb_check?.id !==
+                    (req.body as any).retry_token ||
+                    current.data?.shiprocket_awb_attempt_id !==
+                      fulfillment.data?.shiprocket_awb_attempt_id)
+                )
+                  throw new DeferredAwbError(
+                    "This retry confirmation was already used. Check AWB status again."
+                  )
                 await service.updateFulfillment(id, {
-                  data: { ...fulfillment.data, shiprocket_awb_pending: true },
+                  data: {
+                    ...current.data,
+                    shiprocket_awb_pending: true,
+                    shiprocket_awb_check: null,
+                    shiprocket_awb_attempt_id: randomUUID(),
+                    shiprocket_awb_attempted_at: new Date().toISOString(),
+                    ...(retry
+                      ? {
+                          shiprocket_awb_retry: {
+                            actor_id: req.auth_context.actor_id,
+                            confirmed_at: new Date().toISOString(),
+                            checked_at:
+                              fulfillment.data.shiprocket_awb_check.checked_at,
+                            previous_attempt_id:
+                              fulfillment.data.shiprocket_awb_attempt_id ??
+                              null,
+                          },
+                        }
+                      : {}),
+                  },
                 })
                 requested = true
               },
@@ -91,6 +151,7 @@ export const POST = async (
             ...fulfillment.data,
             ...assigned,
             shiprocket_awb_pending: false,
+            shiprocket_awb_check: null,
           }
           await service.updateFulfillment(id, {
             data,
@@ -115,6 +176,41 @@ export const POST = async (
             tracking_url: assigned.tracking_url,
           })
         } catch (error: any) {
+          if (readOnly && error instanceof DeferredAwbError && error.pending) {
+            const current = await service.retrieveFulfillment(id)
+            if (current.canceled_at || current.data?.awb)
+              return fail(
+                res,
+                409,
+                "SHIPMENT_CHANGED",
+                "Shipment changed during its status check. Refresh before continuing."
+              )
+            const check = {
+              id: randomUUID(),
+              checked_at: new Date().toISOString(),
+              attempt_id: current.data?.shiprocket_awb_attempt_id ?? null,
+            }
+            if (current.data?.shiprocket_awb_pending === true)
+              await service.updateFulfillment(id, {
+                data: { ...current.data, shiprocket_awb_check: check },
+              })
+            return ok(
+              res,
+              {
+                pending: current.data?.shiprocket_awb_pending === true,
+                retry_token:
+                  current.data?.shiprocket_awb_pending === true
+                    ? check.id
+                    : undefined,
+                checked_at: check.checked_at,
+                message:
+                  current.data?.shiprocket_awb_pending === true
+                    ? "Shiprocket still reports this shipment without an AWB. You can wait and check again, or confirm a retry for this same shipment."
+                    : "No AWB is assigned to this shipment yet.",
+              },
+              202
+            )
+          }
           if (
             requested &&
             error instanceof DeferredAwbError &&
@@ -131,7 +227,14 @@ export const POST = async (
             "AWB_ASSIGNMENT_FAILED",
             error instanceof DeferredAwbError
               ? error.message
-              : "AWB assignment could not be completed. Retry this same shipment to verify its state."
+              : "AWB assignment could not be completed. Check AWB status for this same shipment.",
+            {
+              pending:
+                fulfillment.data?.shiprocket_awb_pending === true ||
+                (error instanceof DeferredAwbError
+                  ? error.uncertain
+                  : requested),
+            }
           )
         } finally {
           client.dispose()
@@ -151,3 +254,6 @@ export const POST = async (
     )
   }
 }
+
+export const POST = (req: AuthenticatedMedusaRequest, res: MedusaResponse) =>
+  runAwbAction(req, res)

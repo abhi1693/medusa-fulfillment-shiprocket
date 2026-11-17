@@ -66,8 +66,10 @@ export function openAssignment(
 }
 export class DeferredAwbError extends Error {
   uncertain: boolean
-  constructor(message: string, uncertain = false) {
+  pending: boolean
+  constructor(message: string, uncertain = false, pending = false) {
     super(message)
     this.uncertain = uncertain
+    this.pending = pending
   }
 }

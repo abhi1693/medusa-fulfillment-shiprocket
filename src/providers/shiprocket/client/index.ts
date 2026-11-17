@@ -1375,6 +1375,7 @@ export default class ShiprocketClient {
     fulfillmentId: string,
     options: {
       pending: boolean
+      verifyBeforeAssign?: boolean
       beforeAssign: () => Promise<void>
     }
   ) {
@@ -1432,7 +1433,8 @@ export default class ShiprocketClient {
       )
     if (options.pending)
       throw new DeferredAwbError(
-        "The earlier AWB request is unresolved. Sync this same shipment before another assignment.",
+        "Shiprocket has not confirmed the earlier AWB request. Check AWB status for this shipment.",
+        true,
         true
       )
     const quote = await this.quote(
@@ -1446,6 +1448,18 @@ export default class ShiprocketClient {
           )
       }
     )
+    if (options.verifyBeforeAssign) {
+      const latest = await verify()
+      if (!latest.ready)
+        throw new DeferredAwbError(
+          "Shipment changed before retry: " + latest.issues.join(", ")
+        )
+      if (latest.awb)
+        return result(
+          latest.awb,
+          data.shiprocket_carrier_cost?.amount ?? snapshot.quote.amount
+        )
+    }
     await options.beforeAssign()
     try {
       const response = await (

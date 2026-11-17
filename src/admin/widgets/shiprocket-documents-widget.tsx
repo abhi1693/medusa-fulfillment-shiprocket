@@ -8,6 +8,7 @@ import {
   Copy,
   Button,
   Select,
+  usePrompt,
 } from "@medusajs/ui"
 import { DetailWidgetProps, AdminOrder } from "@medusajs/framework/types"
 import { useState, useEffect } from "react"
@@ -48,11 +49,25 @@ const ShiprocketDocumentsWidget = ({ data }: DetailWidgetProps<AdminOrder>) => {
 
   // Find Shiprocket fulfillment - Medusa v2 formats provider_id as "fp_{module}_{identifier}"
   // e.g. "fp_shiprocket_shiprocket", so we check with includes() for robustness
-  const shipments = fulfillments.filter(
-    (f) =>
-      f.provider_id?.toLowerCase().includes("shiprocket") ||
-      f.data?.courier_name
-  )
+  const shipments = fulfillments
+    .filter(
+      (f) =>
+        f.provider_id?.toLowerCase().includes("shiprocket") ||
+        f.data?.courier_name
+    )
+    .sort((a, b) => {
+      const created = (value: unknown) => {
+        const timestamp = Date.parse(String(value ?? ""))
+        return Number.isFinite(timestamp) ? timestamp : 0
+      }
+      return (
+        created(b.created_at) - created(a.created_at) ||
+        b.id.localeCompare(a.id)
+      )
+    })
+  useEffect(() => {
+    setSelectedFulfillment(undefined)
+  }, [data?.id, shipments[0]?.id])
   const shiprocketFulfillment = (shipments.find(
     (f) => f.id === selectedFulfillment
   ) || shipments[0]) as ShiprocketFulfillment | undefined
@@ -62,6 +77,11 @@ const ShiprocketDocumentsWidget = ({ data }: DetailWidgetProps<AdminOrder>) => {
   const [loading, setLoading] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [assigning, setAssigning] = useState(false)
+  const [checkingAwb, setCheckingAwb] = useState(false)
+  const [pendingAwb, setPendingAwb] = useState<boolean | undefined>()
+  const [awbNotice, setAwbNotice] = useState<string | null>(null)
+  const [retryToken, setRetryToken] = useState<string | null>(null)
+  const prompt = usePrompt()
   const [assignedAwb, setAssignedAwb] = useState<string | undefined>()
   const [scheduling, setScheduling] = useState(false)
   const [canceling, setCanceling] = useState(false)
@@ -73,6 +93,8 @@ const ShiprocketDocumentsWidget = ({ data }: DetailWidgetProps<AdminOrder>) => {
   const awb = (assignedAwb ||
     label?.tracking_number ||
     shiprocketFulfillment?.data?.awb) as string
+  const awbPending =
+    pendingAwb ?? shiprocketFulfillment?.data?.shiprocket_awb_pending === true
 
   // Document URLs (Prioritize fetched, then props)
   const labelUrl = (fetchedDocs?.label_url ||
@@ -100,23 +122,61 @@ const ShiprocketDocumentsWidget = ({ data }: DetailWidgetProps<AdminOrder>) => {
 
   useEffect(() => {
     setAssignedAwb(undefined)
+    setPendingAwb(undefined)
+    setAwbNotice(null)
+    setRetryToken(null)
     setFetchedDocs(null)
     setTracking(null)
     setError(null)
   }, [shiprocketFulfillment?.id])
 
-  const assignAwb = async () => {
+  const assignAwb = async (readOnly = false, confirmedRetry = false) => {
     if (!shiprocketFulfillment?.id || assigning) return
+    const token = retryToken
+    if (
+      confirmedRetry &&
+      (!token ||
+        !(await prompt({
+          title: "Retry AWB assignment?",
+          description:
+            "Shiprocket currently reports no AWB for this shipment, but the earlier request may still finish. This retries only the same saved shipment and courier after another status check. It does not replace the order or request pickup.",
+          confirmText: "Retry same shipment",
+          cancelText: "Keep waiting",
+        })))
+    )
+      return
     setAssigning(true)
+    setCheckingAwb(readOnly)
+    setAwbNotice(null)
+    setRetryToken(null)
+    if (!readOnly) setPendingAwb(true)
     setError(null)
     try {
       const result = await sdk.client.fetch<any>(
-        `/admin/shiprocket/fulfillments/${encodeURIComponent(shiprocketFulfillment.id)}/awb`,
-        { method: "POST" }
+        `/admin/shiprocket/fulfillments/${encodeURIComponent(shiprocketFulfillment.id)}/awb${readOnly ? "/sync" : confirmedRetry ? "/retry" : ""}`,
+        {
+          method: "POST",
+          ...(confirmedRetry
+            ? { body: { confirm: true, retry_token: token } }
+            : {}),
+        }
       )
+      if (readOnly && result.success && !result.awb) {
+        setPendingAwb(result.pending === true)
+        setRetryToken(result.retry_token || null)
+        setAwbNotice(
+          result.message +
+            (result.checked_at
+              ? ` Last checked ${new Date(result.checked_at).toLocaleTimeString()}.`
+              : "")
+        )
+        await queryClient.invalidateQueries()
+        return
+      }
       if (!result.success || !result.awb)
         throw Error(result.message || "AWB assignment was not confirmed")
       setAssignedAwb(result.awb)
+      setPendingAwb(false)
       if (result.documents) setFetchedDocs(result.documents)
       if (result.documents && !result.documents.label_url)
         setError(
@@ -125,9 +185,12 @@ const ShiprocketDocumentsWidget = ({ data }: DetailWidgetProps<AdminOrder>) => {
         )
       await queryClient.invalidateQueries()
     } catch (error) {
+      if ((error as any)?.status === 400) setPendingAwb(undefined)
       setError(error instanceof Error ? error.message : "AWB assignment failed")
+      await queryClient.invalidateQueries()
     } finally {
       setAssigning(false)
+      setCheckingAwb(false)
     }
   }
 
@@ -423,7 +486,7 @@ const ShiprocketDocumentsWidget = ({ data }: DetailWidgetProps<AdminOrder>) => {
             <Select.Content>
               {shipments.map((f, index) => (
                 <Select.Item key={f.id} value={f.id}>
-                  Shipment {index + 1}
+                  Shipment {shipments.length - index}
                 </Select.Item>
               ))}
             </Select.Content>
@@ -525,8 +588,28 @@ const ShiprocketDocumentsWidget = ({ data }: DetailWidgetProps<AdminOrder>) => {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-2">
               {!awb && shiprocketFulfillment.data?.shiprocket_deferred_awb && (
-                <Button size="small" onClick={assignAwb} disabled={assigning}>
-                  {assigning ? "Assigning AWB…" : "Assign AWB"}
+                <Button
+                  size="small"
+                  onClick={() => assignAwb(awbPending)}
+                  disabled={assigning}
+                >
+                  {assigning
+                    ? checkingAwb
+                      ? "Checking AWB…"
+                      : "Assigning AWB…"
+                    : awbPending
+                      ? "Check AWB status"
+                      : "Assign AWB"}
+                </Button>
+              )}
+              {!awb && awbPending && retryToken && (
+                <Button
+                  variant="secondary"
+                  size="small"
+                  onClick={() => assignAwb(false, true)}
+                  disabled={assigning}
+                >
+                  Retry AWB assignment
                 </Button>
               )}
               {awb && (
@@ -572,8 +655,18 @@ const ShiprocketDocumentsWidget = ({ data }: DetailWidgetProps<AdminOrder>) => {
           </div>
           {!awb && (
             <Text size="xsmall" className="mt-2 text-ui-fg-subtle">
-              Assign an AWB first, then schedule pickup when the parcel is
-              ready.
+              {awbPending
+                ? "The earlier assignment is unconfirmed. Check this same shipment's AWB status before continuing."
+                : "Assign an AWB first, then schedule pickup when the parcel is ready."}
+            </Text>
+          )}
+          {awbNotice && (
+            <Text
+              role="status"
+              size="xsmall"
+              className="mt-2 text-ui-fg-subtle"
+            >
+              {awbNotice}
             </Text>
           )}
         </div>

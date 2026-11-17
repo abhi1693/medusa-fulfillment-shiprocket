@@ -1,3 +1,5 @@
+import { POST as checkAwbRoute } from "../api/admin/shiprocket/fulfillments/[id]/awb/sync/route"
+import { POST as retryAwbRoute } from "../api/admin/shiprocket/fulfillments/[id]/awb/retry/route"
 import { remoteFixture } from "./fixtures/existing-order"
 import {
   financialSnapshot,
@@ -8,6 +10,98 @@ import assert from "node:assert/strict"
 import axios from "axios"
 import ShiprocketClient from "../providers/shiprocket/client"
 import { resetShiprocketManager } from "../providers/shiprocket/client/manager"
+
+async function pendingRouteFixture(t: any) {
+  const env = { ...process.env }
+  Object.assign(process.env, {
+    SHIPROCKET_MODE: "test",
+    SHIPROCKET_EMAIL: "fixture@example.test",
+    SHIPROCKET_PASSWORD: "fixture",
+    SHIPROCKET_ASSIGNMENT_SECRET: assignmentKey,
+  })
+  t.after(() => {
+    for (const key of [
+      "SHIPROCKET_MODE",
+      "SHIPROCKET_EMAIL",
+      "SHIPROCKET_PASSWORD",
+      "SHIPROCKET_ASSIGNMENT_SECRET",
+    ]) {
+      if (env[key] === undefined) delete process.env[key]
+      else process.env[key] = env[key]
+    }
+  })
+  const f = setup(t, {
+    auto_assign_awb: false,
+    assignment_secret: assignmentKey,
+  })
+  const quote = { courier_company_id: 2, amount: 50 }
+  const prepared = await f.client.prepareFulfillment(
+    {},
+    items,
+    order,
+    pickup,
+    quote
+  )
+  const draft = await f.client.create(
+    { id: "ful_manual" },
+    items,
+    order,
+    pickup,
+    quote
+  )
+  const remote = remoteFixture(prepared.orderData, {
+    order_id: 100,
+    shipment_id: 42,
+    merchant_reference: prepared.orderData.order_id,
+  })
+  f.setExisting(remote)
+  let saved: any = {
+    id: "ful_manual",
+    provider_id: "shiprocket_shiprocket",
+    data: { ...draft, shiprocket_awb_pending: true },
+    labels: [],
+  }
+  const scope = {
+    resolve: (key: string) =>
+      key === "logger"
+        ? { info() {}, warn() {}, error() {}, debug() {} }
+        : key === "locking"
+          ? { execute: async (_key: string, fn: any) => fn() }
+          : {
+              retrieveFulfillment: async () => saved,
+              updateFulfillment: async (_id: string, input: any) => {
+                saved = { ...saved, ...input }
+                return saved
+              },
+            },
+  }
+  const call = async (route: any, body?: any) => {
+    const res: any = {
+      statusCode: 200,
+      body: undefined,
+      status(value: number) {
+        this.statusCode = value
+        return this
+      },
+      json(value: any) {
+        this.body = value
+        return this
+      },
+    }
+    await route(
+      {
+        scope,
+        params: { id: "ful_manual" },
+        body,
+        auth_context: { actor_id: "user_fixture" },
+      },
+      res
+    )
+    return res
+  }
+  return { ...f, remote, call, saved: () => saved }
+}
+
 const courier = {
   is_surface: false,
   courier_company_id: 2,
@@ -1490,7 +1584,7 @@ test("unresolved manual assignment retains pending state; mismatches and rate ch
           throw Error("No replay")
         },
       }),
-    /earlier AWB request is unresolved/
+    /Shiprocket has not confirmed the earlier AWB request/
   )
   assert.equal(f.calls.filter((c) => c.url === "/courier/assign/awb").length, 1)
   remote.status = "CANCELLATION REQUESTED"
@@ -1597,4 +1691,96 @@ test("manual draft preflight requires a native fulfillment identity before carri
     /native fulfillment ID/
   )
   assert.equal(f.calls.length, 0)
+})
+
+test("shipment readback offers one confirmed retry and never assigns while checking", async (t) => {
+  const f = await pendingRouteFixture(t)
+  const checked = await f.call(checkAwbRoute)
+  assert.equal(checked.statusCode, 202)
+  assert.equal(checked.body.pending, true)
+  assert.ok(checked.body.retry_token)
+  assert.equal(f.calls.filter((c) => c.url === "/courier/assign/awb").length, 0)
+  assert.equal(
+    (
+      await f.call(retryAwbRoute, {
+        retry_token: checked.body.retry_token,
+        confirm: false,
+      })
+    ).statusCode,
+    400
+  )
+  const body = { retry_token: checked.body.retry_token, confirm: true }
+  const assigned = await f.call(retryAwbRoute, body)
+  assert.equal(assigned.statusCode, 200)
+  assert.equal(assigned.body.awb, "FIXTURE")
+  assert.equal(f.saved().data.shiprocket_awb_pending, false)
+  assert.equal(f.saved().data.shiprocket_awb_check, null)
+  assert.equal(f.saved().data.shiprocket_awb_retry.actor_id, "user_fixture")
+  assert.equal(f.saved().labels[0].tracking_number, "FIXTURE")
+  assert.equal((await f.call(retryAwbRoute, body)).statusCode, 409)
+  assert.deepEqual(
+    f.calls.filter((c) => c.url === "/courier/assign/awb").map((c) => c.data),
+    [{ shipment_id: 42, courier_id: 2 }]
+  )
+  assert.equal(
+    f.calls.filter((c) => c.url === "/orders/create/adhoc").length,
+    1
+  )
+  assert.ok(
+    !f.calls.some((c) =>
+      ["/orders/cancel", "/courier/generate/pickup"].includes(c.url)
+    )
+  )
+})
+
+test("expired checks cannot retry and a late AWB is adopted before a confirmed retry posts", async (t) => {
+  const f = await pendingRouteFixture(t)
+  const checked = await f.call(checkAwbRoute)
+  f.saved().data.shiprocket_awb_check.checked_at = new Date(
+    Date.now() - 300001
+  ).toISOString()
+  assert.equal(
+    (
+      await f.call(retryAwbRoute, {
+        retry_token: checked.body.retry_token,
+        confirm: true,
+      })
+    ).statusCode,
+    409
+  )
+  const fresh = await f.call(checkAwbRoute)
+  let reads = 0
+  f.setOnRead((_count, remote) => {
+    if (++reads === 2) {
+      remote.shipments.awb = "LATE-AWB"
+      remote.shipments.status = "AWB ASSIGNED"
+      remote.shipments.courier_company_id = 2
+      remote.status = "READY TO SHIP"
+      remote.status_code = 3
+    }
+  })
+  const result = await f.call(retryAwbRoute, {
+    retry_token: fresh.body.retry_token,
+    confirm: true,
+  })
+  assert.equal(result.statusCode, 200, JSON.stringify(result.body))
+  assert.equal(result.body.awb, "LATE-AWB")
+  assert.equal(f.calls.filter((c) => c.url === "/courier/assign/awb").length, 0)
+})
+
+test("a confirmed retry timeout keeps its new pending attempt and consumes the confirmation", async (t) => {
+  const f = await pendingRouteFixture(t)
+  const checked = await f.call(checkAwbRoute)
+  f.setAwbFailure(
+    Object.assign(Error("Gateway timeout"), {
+      response: { status: 504, data: {} },
+    })
+  )
+  const body = { retry_token: checked.body.retry_token, confirm: true }
+  assert.equal((await f.call(retryAwbRoute, body)).statusCode, 409)
+  assert.equal(f.saved().data.shiprocket_awb_pending, true)
+  assert.equal(f.saved().data.shiprocket_awb_check, null)
+  assert.ok(f.saved().data.shiprocket_awb_attempt_id)
+  assert.equal((await f.call(retryAwbRoute, body)).statusCode, 409)
+  assert.equal(f.calls.filter((c) => c.url === "/courier/assign/awb").length, 1)
 })
