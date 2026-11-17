@@ -1,4 +1,5 @@
 import { paidPackedUnitPlan, selectPackedUnit } from "./packed-unit-plan"
+import { shipmentLineKey } from "./cart-shipment-plan"
 import { fulfillmentCourier } from "./fulfillment-courier"
 import { orderShipmentAllocation } from "./order-shipment-allocation"
 import type { ExistingOrderBinding } from "./existing-order"
@@ -253,7 +254,17 @@ export async function prepareFulfillmentPickup(
           ? packedParcelForItems(order.metadata, optionId, input.items)
           : undefined,
       item_measurements: unit
-        ? { [input.items![0].id]: unit.measurements }
+        ? plan?.combined
+          ? Object.fromEntries(
+              (allocatedLines || order.items || [])
+                .map((line: any) => [
+                  line.id,
+                  plan.units.find((u) => u.key === shipmentLineKey(line))
+                    ?.measurements,
+                ])
+                .filter(([, measurements]: any) => measurements)
+            )
+          : { [input.items![0].id]: unit.measurements }
         : shiprocketItemMeasurements(order.items || []),
       package_id: unit?.id,
       resume,

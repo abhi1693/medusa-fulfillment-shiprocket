@@ -1,4 +1,5 @@
 import { packedUnitInputs } from "./packed-unit-plan"
+import { shipmentPolicy } from "./shipment-policy"
 import {
   quoteSignature as signature,
   signedCourierClaim,
@@ -118,6 +119,17 @@ export function verifyCourierQuote(
   // Native validateFulfillmentData has a reduced product projection. The
   // pricing workflow hooks supply the authoritative full measurement map.
   if (claim.quote.parcel_plan && context.shiprocket_item_measurements) {
+    if (
+      context.shiprocket_shipment_policy &&
+      JSON.stringify(
+        claim.quote.parcel_plan.policy ||
+          shipmentPolicy({
+            multiple_items: "split_shipment",
+            single_shipment_dimensions: "largest_item",
+          })
+      ) !== JSON.stringify(shipmentPolicy(context.shiprocket_shipment_policy))
+    )
+      return fail()
     const actual = packedUnitInputs(context).map(
       ({ key, variant_id, quantity, measurements }) => ({
         key,

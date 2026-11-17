@@ -9,6 +9,11 @@ import {
 } from "../providers/shiprocket/utils/quote"
 import type { CourierQuote } from "../providers/shiprocket/utils/courier-policy"
 import { MedusaError } from "@medusajs/framework/utils"
+import {
+  fallbackMeasurements,
+  shipmentPolicy,
+  type ShipmentPolicy,
+} from "./shipment-policy"
 
 function invalid(message: string): never {
   throw new MedusaError(MedusaError.Types.INVALID_DATA, message)
@@ -24,8 +29,54 @@ export type PackedUnit = {
     "courier_company_id" | "courier_name" | "amount" | "service"
   >
 }
-export type PackedUnitPlan = { version: 1; units: PackedUnit[] }
+export type PackedUnitPlan = {
+  version: 1
+  units: PackedUnit[]
+  policy?: ShipmentPolicy
+  combined?: {
+    measurements: ShippingMeasurements
+    courier: PackedUnit["courier"]
+  }
+}
+/** Keep all dimensions from one largest-volume item; never mix unrelated sides. */
+export function combinedMeasurements(
+  inputs: ReturnType<typeof packedUnitInputs>,
+  policy: ShipmentPolicy
+): ShippingMeasurements {
+  const volume = (m: ShippingMeasurements) =>
+    Number(m.length_mm) * Number(m.width_mm) * Number(m.height_mm)
+  const largest = [...inputs].sort(
+    (a, b) =>
+      volume(b.measurements) - volume(a.measurements) ||
+      a.key.localeCompare(b.key)
+  )[0]
+  const measurements = {
+    weight_grams: inputs.reduce(
+      (sum, row) => sum + Number(row.measurements.weight_grams) * row.quantity,
+      0
+    ),
+    length_mm: Number(largest.measurements.length_mm),
+    width_mm: Number(largest.measurements.width_mm),
+    height_mm: Number(largest.measurements.height_mm),
+  }
+  if (policy.single_shipment_dimensions === "stacked") {
+    measurements.length_mm = Math.max(
+      ...inputs.map((r) => Number(r.measurements.length_mm))
+    )
+    measurements.width_mm = Math.max(
+      ...inputs.map((r) => Number(r.measurements.width_mm))
+    )
+    measurements.height_mm = inputs.reduce(
+      (sum, r) => sum + Number(r.measurements.height_mm) * r.quantity,
+      0
+    )
+  }
+  if (!Object.values(measurements).every((v) => Number.isFinite(v) && v > 0))
+    invalid("Combined package measurements are invalid")
+  return measurements
+}
 export function packedUnitInputs(context: Record<string, any>) {
+  const policy = shipmentPolicy(context.shiprocket_shipment_policy)
   const measurements = shiprocketItemMeasurements(context.items || [])
   const rows = new Map<
     string,
@@ -42,12 +93,17 @@ export function packedUnitInputs(context: Record<string, any>) {
     const quantity = Number(item.quantity)
     if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > 1000)
       invalid("Packed unit quantity must be between 1 and 1000")
-    const m =
-      context.shiprocket_item_measurements?.[item.id] || measurements[item.id]
+    const m = fallbackMeasurements(
+      context.shiprocket_item_measurements?.[item.id] || measurements[item.id],
+      policy
+    )
     if (
       !m ||
       !Object.values(m).every(
-        (v) => Number.isFinite(Number(v)) && Number(v) > 0
+        (v) =>
+          (typeof v === "number" || typeof v === "string") &&
+          Number.isFinite(Number(v)) &&
+          Number(v) > 0
       )
     )
       invalid(
@@ -76,6 +132,32 @@ export async function quotePackedUnits(
   quote: (params: any) => Promise<CourierQuote[]>
 ) {
   const inputs = packedUnitInputs(context)
+  const policy = shipmentPolicy(context.shiprocket_shipment_policy)
+  if (policy.multiple_items === "single_shipment") {
+    const measurements = combinedMeasurements(inputs, policy)
+    const params = shiprocketQuote({
+      ...context,
+      shiprocket_parcel: measurements,
+    })
+    const choices = (await quote(params)).map((courier) => ({
+      ...courier,
+      parcel_plan: {
+        version: 1 as const,
+        policy,
+        units: inputs.map(({ key, variant_id, quantity, measurements }) => ({
+          key,
+          variant_id,
+          quantity,
+          measurements,
+          courier,
+        })),
+        combined: { measurements, courier },
+      },
+    }))
+    if (!choices.length)
+      invalid("No delivery service is available for the combined package")
+    return { choices, params }
+  }
   const requests = new Map<string, Promise<CourierQuote[]>>()
   const results = await Promise.all(
     inputs.map(async (input) => {
@@ -116,7 +198,7 @@ export async function quotePackedUnits(
           (sum, u) => sum + Math.round(u.courier.amount * 100) * u.quantity,
           0
         ) / 100,
-      parcel_plan: { version: 1, units },
+      parcel_plan: { version: 1, units, policy },
       relaxed_preferences: [
         ...new Set(
           results.flatMap(
@@ -142,6 +224,8 @@ export function paidPackedUnitPlan(quote: any): PackedUnitPlan | undefined {
   }
   if (plan.version !== 1 || !Array.isArray(plan.units) || !plan.units.length)
     invalid("The paid package plan is invalid; review this order")
+  if ((plan.policy?.multiple_items === "single_shipment") !== !!plan.combined)
+    invalid("The paid combined package plan is invalid; review this order")
   return plan
 }
 export function selectPackedUnit(
@@ -151,6 +235,29 @@ export function selectPackedUnit(
   optionId = "",
   packageId?: string
 ) {
+  if (plan.combined) {
+    const lines = combinedOrderLines(plan, orderItems)
+    const id = combinedPackageId(optionId, plan)
+    if (packageId !== undefined && packageId !== id)
+      invalid("The selected shipping package is no longer available")
+    const expected = lines
+      .map((line: any) => [line.id, Number(line.quantity)])
+      .sort()
+    const actual = selected
+      .map((line) => [line.id, Number(line.quantity)])
+      .sort()
+    if (JSON.stringify(actual) !== JSON.stringify(expected))
+      invalid("Fulfill all items in the combined package together.")
+    if (
+      lines.some(
+        (line: any) => Number(line.detail?.fulfilled_quantity || 0) > 0
+      )
+    )
+      invalid(
+        "The combined package has already been fulfilled or partially fulfilled; review this order"
+      )
+    return { ...plan.units[0], ...plan.combined, id, ordinal: 0 }
+  }
   if (selected.length !== 1 || Number(selected[0].quantity) !== 1)
     invalid("Fulfill one packed unit at a time.")
   const line = orderItems.find((i) => i.id === selected[0].id)
@@ -196,6 +303,32 @@ function packedUnitId(optionId: string, key: string, ordinal: number) {
     .digest("hex")
 }
 
+function combinedPackageId(optionId: string, plan: PackedUnitPlan) {
+  return createHash("sha256")
+    .update(
+      JSON.stringify([
+        optionId,
+        "single_shipment",
+        plan.units.map((u) => [u.key, u.quantity]),
+        plan.combined?.measurements,
+      ])
+    )
+    .digest("hex")
+}
+function combinedOrderLines(plan: PackedUnitPlan, items: any[]) {
+  const lines = items.filter((line) =>
+    plan.units.some((unit) => shipmentLineKey(line) === unit.key)
+  )
+  for (const unit of plan.units)
+    if (
+      lines
+        .filter((line) => shipmentLineKey(line) === unit.key)
+        .reduce((n, line) => n + Number(line.quantity), 0) !== unit.quantity
+    )
+      invalid("Order quantities no longer match the paid package plan")
+  return lines
+}
+
 export function remainingPackedUnits(order: any) {
   const jobs: {
     id: string
@@ -217,6 +350,41 @@ export function remainingPackedUnits(order: any) {
       orderShipmentAllocation(order, method.shipping_option_id, []) ||
       order.items ||
       []
+    if (plan.combined) {
+      const lines = combinedOrderLines(plan, assigned)
+      if (
+        lines.every(
+          (line: any) =>
+            Number(line.detail?.fulfilled_quantity || 0) ===
+            Number(line.quantity)
+        )
+      )
+        continue
+      if (
+        lines.some(
+          (line: any) => Number(line.detail?.fulfilled_quantity || 0) > 0
+        )
+      )
+        invalid(
+          "The combined package was partially fulfilled; review this order"
+        )
+      jobs.push({
+        id: combinedPackageId(method.shipping_option_id, plan),
+        title: "Combined package",
+        shipping_option_id: method.shipping_option_id,
+        location_id: quote.origin_location_id,
+        items: lines.map((line: any) => ({
+          id: line.id,
+          quantity: Number(line.quantity),
+        })),
+        measurements: plan.combined.measurements,
+        carrier_amount: plan.combined.courier.amount,
+        courier_company_id: plan.combined.courier.courier_company_id,
+        courier_name: plan.combined.courier.courier_name,
+        service: plan.combined.courier.service,
+      })
+      continue
+    }
     for (const unit of plan.units) {
       const lines = assigned
         .filter((line: any) => shipmentLineKey(line) === unit.key)

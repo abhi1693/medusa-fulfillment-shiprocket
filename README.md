@@ -1,5 +1,13 @@
 # Medusa fulfillment Shiprocket
 
+## Multi-item package policy
+
+Provider option `multiple_items` accepts `split_shipment` (default: one carrier order per physical unit) or `single_shipment` (one combined carrier order per pickup/shipping group). Quantity three produces three orders in split mode. Combined mode sums actual weights across quantities and quotes one package. Set `single_shipment_dimensions` to `largest_item` (default: all three dimensions from the greatest-volume unit) or `stacked` (maximum length/width and summed quantity-weighted heights). Environment equivalents are `SHIPROCKET_MULTIPLE_ITEMS` and `SHIPROCKET_SINGLE_SHIPMENT_DIMENSIONS`. Invalid values are rejected at startup. Largest-item dimensions are an approximation, not proof that all contents fit that carton.
+
+The paid signed package plan freezes quantities, measurements, strategy and carrier cost. Configuration/catalog changes cannot repartition it; a combined package must be fulfilled together. Existing split plans continue through their saved plan. Checkout pricing, package dispatch, courier selection and timeout recovery all use the same package snapshot. Separate AWB, pickup and document actions continue per resulting native fulfillment. Consumers still supply the public package/courier/recovery adapters described below.
+
+For cables or other items with missing native shipping fields, opt into `missing_measurements: "use_defaults"` (`SHIPROCKET_MISSING_MEASUREMENTS=use_defaults`); the default `reject` preserves strict validation. Only null/undefined fields use defaults. Recorded variant/product values, including small actual weights, remain authoritative; malformed/nonpositive values still fail validation. Defaults are `default_item_weight_grams: 500` and `default_item_length_mm`, `default_item_width_mm`, `default_item_height_mm`: `6`. The weight matches Shiprocket's documented platform default; 6 mm is the smallest whole millimetre above its API's strict >0.5 cm dimension threshold, not a claimed default carton. Each option also accepts a `SHIPROCKET_` uppercase environment equivalent. Custom default weights must be positive; default dimensions must exceed 5 mm. Resolved defaults are frozen into the signed paid measurements and never written back to the catalog.
+
 Shiprocket fulfillment and live delivery rates for Medusa v2. Package name: `@abhi1693/medusa-fulfillment-shiprocket`. No npm release has been published.
 
 ## Requirements and local verification

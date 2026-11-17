@@ -273,7 +273,7 @@ const ShiprocketDocumentsWidget = ({ data }: DetailWidgetProps<AdminOrder>) => {
 
   const humanizeStatus = (text: string) => {
     if (!text) return ""
-    const s = text.toUpperCase()
+    const s = text.toUpperCase().replace(/[\s_-]/g, "")
 
     // Common Shiprocket merged statuses mapping
     const validStatuses: Record<string, string> = {
@@ -285,7 +285,8 @@ const ShiprocketDocumentsWidget = ({ data }: DetailWidgetProps<AdminOrder>) => {
       PICKUPQUEUED: "Pickup Queued",
       PICKUPRESCHEDULED: "Pickup Rescheduled",
       PICKUPPICKEDUP: "Pickup Picked Up",
-      AWBASSIGNED: "AWB Assigned",
+      AWBASSIGNED: "AWB assigned",
+      AWBPENDING: "AWB pending",
       LABELGENERATED: "Label Generated",
       MANIFESTGENERATED: "Manifest Generated",
       INTRANSIT: "In Transit",
@@ -305,7 +306,7 @@ const ShiprocketDocumentsWidget = ({ data }: DetailWidgetProps<AdminOrder>) => {
 
     // Fallback: Title Case replacing underscores/dashes, handling simple spacing if possible
     return text
-      .replace(/([A-Z])/g, " $1") // simple space insertion if camelCase (unlikely here but safe)
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
       .replace(/[_-]/g, " ")
       .trim()
       .split(" ")
@@ -375,9 +376,9 @@ const ShiprocketDocumentsWidget = ({ data }: DetailWidgetProps<AdminOrder>) => {
   return (
     <Container className="p-0 overflow-hidden border border-ui-border-base bg-ui-bg-base/50 shadow-elevation-card-rest">
       {/* Header */}
-      <div className="flex items-center justify-between px-6 py-4 border-b border-ui-border-base bg-white dark:bg-ui-bg-base">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-4 border-b border-ui-border-base bg-ui-bg-base">
         <div className="flex items-center gap-x-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-ui-border-base bg-white dark:bg-ui-bg-base shadow-sm overflow-hidden p-1.5">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-ui-border-base bg-ui-bg-base overflow-hidden p-1.5">
             <img
               src={logo}
               alt="Shiprocket"
@@ -387,7 +388,7 @@ const ShiprocketDocumentsWidget = ({ data }: DetailWidgetProps<AdminOrder>) => {
           <div>
             <Heading
               level="h2"
-              className="text-sm font-bold text-ui-fg-base leading-none mb-1"
+              className="text-sm font-medium text-ui-fg-base mb-0.5"
             >
               Shipment & Tracking
             </Heading>
@@ -402,7 +403,7 @@ const ShiprocketDocumentsWidget = ({ data }: DetailWidgetProps<AdminOrder>) => {
           <Badge
             color={getStatusColor(humanStatus)}
             size="xsmall"
-            className="font-bold px-3 py-1 rounded-full uppercase tracking-tighter text-[10px]"
+            className="shrink-0 whitespace-nowrap"
           >
             {humanStatus}
           </Badge>
@@ -430,18 +431,17 @@ const ShiprocketDocumentsWidget = ({ data }: DetailWidgetProps<AdminOrder>) => {
         </div>
       )}
       {/* Tracking ID & Sync */}
-      <div className="px-6 py-5 border-b border-ui-border-base bg-ui-bg-subtle">
+      <div className="px-6 py-4 border-b border-ui-border-base">
         <div className="flex items-center justify-between">
           <div>
-            <Text
-              size="xsmall"
-              className="text-ui-fg-muted font-bold uppercase tracking-[0.1em] text-[10px] mb-1 block"
-            >
+            <Text size="xsmall" className="text-ui-fg-subtle mb-1 block">
               AWB Number
             </Text>
             <div className="flex items-center gap-x-2">
-              <Text className="text-xl font-mono font-bold tracking-tight text-ui-fg-base leading-none">
-                {awb || "UNASSIGNED"}
+              <Text
+                className={`break-all text-ui-fg-base ${awb ? "font-mono text-base" : "text-sm"}`}
+              >
+                {awb || "Not assigned"}
               </Text>
               {awb && (
                 <Copy
@@ -469,7 +469,7 @@ const ShiprocketDocumentsWidget = ({ data }: DetailWidgetProps<AdminOrder>) => {
 
         {/* Shipment Specs */}
         {(tracking?.weight || tracking?.origin) && (
-          <div className="flex items-center gap-x-4 pt-3">
+          <div className="flex flex-wrap items-center gap-3 pt-3">
             {tracking.weight && (
               <div className="flex items-center gap-x-1.5 px-2 py-0.5 rounded bg-ui-bg-component border border-ui-border-base shadow-sm">
                 <Text size="xsmall" className="text-ui-fg-muted">
@@ -488,7 +488,7 @@ const ShiprocketDocumentsWidget = ({ data }: DetailWidgetProps<AdminOrder>) => {
                 <Text
                   size="xsmall"
                   weight="plus"
-                  className="text-ui-fg-base whitespace-nowrap"
+                  className="text-ui-fg-base break-words"
                 >
                   {tracking.origin}{" "}
                   <span className="text-ui-fg-muted mx-0.5">→</span>{" "}
@@ -500,100 +500,92 @@ const ShiprocketDocumentsWidget = ({ data }: DetailWidgetProps<AdminOrder>) => {
         )}
 
         {/* Sync info & Error */}
-        <div className="flex items-center justify-between mt-3 pt-3 border-t border-ui-border-base/50">
-          <Text size="xsmall" className="text-ui-fg-muted font-medium">
-            {tracking?.updated_at
-              ? `Updated: ${new Date(tracking.updated_at).toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`
-              : "Not Synced"}
-          </Text>
-          {(error || documentFailure) && (
-            <Text
-              role="alert"
-              size="xsmall"
-              className="text-ui-fg-error font-medium max-w-[260px]"
-            >
-              {error || documentFailure}
+        {(awb || error || documentFailure) && (
+          <div className="flex flex-wrap items-start justify-between gap-2 mt-3">
+            <Text size="xsmall" className="text-ui-fg-muted font-medium">
+              {tracking?.updated_at
+                ? `Updated: ${new Date(tracking.updated_at).toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`
+                : "Tracking has not been synced"}
             </Text>
-          )}
-        </div>
-      </div>
-
-      {!awb &&
-        !isCanceled &&
-        shiprocketFulfillment?.data?.shiprocket_deferred_awb && (
-          <div className="px-6 py-4 border-b border-ui-border-base">
-            <Button
-              size="small"
-              className="w-full"
-              onClick={assignAwb}
-              disabled={assigning}
-            >
-              {assigning ? "Assigning AWB…" : "Assign AWB"}
-            </Button>
-            <Text size="xsmall" className="mt-2 text-ui-fg-muted">
-              Assign an AWB first. Pickup can then be scheduled separately.
-            </Text>
+            {(error || documentFailure) && (
+              <Text
+                role="alert"
+                size="xsmall"
+                className="text-ui-fg-error break-words"
+              >
+                {error || documentFailure}
+              </Text>
+            )}
           </div>
         )}
-      {/* Action Buttons Row */}
-      {shiprocketFulfillment && !isCanceled && (
-        <div className="px-6 py-4 border-b border-ui-border-base bg-ui-bg-base/30 grid grid-cols-2 gap-3">
-          {awb && (
+      </div>
+
+      {!isCanceled && (
+        <div className="px-6 py-4 border-b border-ui-border-base">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              {!awb && shiprocketFulfillment.data?.shiprocket_deferred_awb && (
+                <Button size="small" onClick={assignAwb} disabled={assigning}>
+                  {assigning ? "Assigning AWB…" : "Assign AWB"}
+                </Button>
+              )}
+              {awb && (
+                <Button
+                  variant="secondary"
+                  size="small"
+                  onClick={schedulePickup}
+                  disabled={scheduling || syncing || !!isScheduled}
+                >
+                  {scheduling
+                    ? "Scheduling…"
+                    : isScheduled
+                      ? "Pickup scheduled"
+                      : "Schedule pickup"}
+                </Button>
+              )}
+              {awb &&
+                (!labelUrl ||
+                  documentFailure ||
+                  (isScheduled && !manifestUrl)) && (
+                  <Button
+                    variant="secondary"
+                    size="small"
+                    onClick={syncTracking}
+                    disabled={syncing || scheduling || assigning}
+                  >
+                    {syncing
+                      ? "Generating documents…"
+                      : documentFailure
+                        ? "Retry documents"
+                        : "Generate documents"}
+                  </Button>
+                )}
+            </div>
             <Button
-              variant="secondary"
+              variant="danger"
               size="small"
-              onClick={schedulePickup}
-              disabled={scheduling || syncing || !!isScheduled}
-              className="w-full bg-ui-bg-base hover:bg-ui-bg-subtle h-9 text-xs font-bold border-ui-border-strong shadow-sm"
+              onClick={cancelShipment}
+              disabled={canceling || syncing}
             >
-              {scheduling
-                ? "Scheduling..."
-                : isScheduled
-                  ? "Pickup scheduled"
-                  : "Schedule pickup"}
+              {canceling ? "Canceling…" : "Cancel"}
             </Button>
+          </div>
+          {!awb && (
+            <Text size="xsmall" className="mt-2 text-ui-fg-subtle">
+              Assign an AWB first, then schedule pickup when the parcel is
+              ready.
+            </Text>
           )}
-          <Button
-            variant="danger"
-            size="small"
-            onClick={cancelShipment}
-            disabled={canceling || syncing}
-            className="w-full h-9 text-xs font-bold shadow-sm"
-          >
-            {canceling ? "Canceling..." : "Cancel"}
-          </Button>
         </div>
       )}
 
-      {awb &&
-        !isCanceled &&
-        (!labelUrl || documentFailure || (isScheduled && !manifestUrl)) && (
-          <div className="px-6 py-3 border-b border-ui-border-base">
-            <Button
-              variant="secondary"
-              size="small"
-              className="w-full"
-              onClick={syncTracking}
-              disabled={syncing || scheduling || assigning}
-            >
-              {syncing
-                ? "Generating documents…"
-                : documentFailure
-                  ? "Retry documents"
-                  : "Generate documents"}
-            </Button>
-          </div>
-        )}
       {/* Documents Grid */}
-      <div className="px-6 py-6 border-b border-ui-border-base bg-ui-bg-base">
-        <Text
-          size="xsmall"
-          className="text-ui-fg-muted font-bold uppercase tracking-[0.1em] text-[10px] mb-5 block"
-        >
-          Logistics Documents
+      <div className="px-6 py-4 border-b border-ui-border-base bg-ui-bg-base">
+        <Text size="xsmall" className="text-ui-fg-subtle mb-3 block">
+          Documents
         </Text>
 
-        <div className="grid grid-cols-3 gap-x-4">
+        <div className="flex flex-wrap gap-2">
           <DocumentButton
             href={labelUrl}
             label="Label"
@@ -703,11 +695,11 @@ const ShiprocketDocumentsWidget = ({ data }: DetailWidgetProps<AdminOrder>) => {
 
       {/* External Tracking Footer */}
       {trackingUrl && !isCanceled && (
-        <div className="p-5 bg-ui-bg-base border-t border-ui-border-base">
+        <div className="px-6 py-4 bg-ui-bg-base">
           <Button
             variant="primary"
             size="small"
-            className="w-full h-9 font-bold"
+            className=""
             onClick={() =>
               window.open(trackingUrl, "_blank", "noopener,noreferrer")
             }
@@ -747,15 +739,15 @@ const DocumentButton = ({
       title={status?.message}
       target={isAvailable ? "_blank" : undefined}
       rel={isAvailable ? "noopener noreferrer" : undefined}
-      className={`flex items-center justify-center gap-x-2 py-2 px-3 rounded-lg border transition-all duration-300 group w-full ${
+      className={`inline-flex min-w-[120px] items-center gap-x-2 py-2 px-3 rounded-md border transition-colors group ${
         isAvailable
-          ? `border-ui-border-base bg-ui-bg-base ${hoverBorder} hover:shadow-elevation-card-hover hover:-translate-y-0.5`
-          : "border-dashed border-ui-border-base bg-ui-bg-subtle/50 cursor-not-allowed grayscale opacity-50"
+          ? `border-ui-border-base bg-ui-bg-base ${hoverBorder} hover:shadow-elevation-card-hover`
+          : "border-ui-border-base bg-ui-bg-subtle cursor-not-allowed"
       }`}
       onClick={(e) => !isAvailable && e.preventDefault()}
     >
       <div
-        className={`flex items-center justify-center w-6 h-6 rounded-md transition-transform duration-300 group-hover:scale-110 shadow-sm ${isAvailable ? bg : "bg-ui-bg-component"}`}
+        className={`flex shrink-0 items-center justify-center w-6 h-6 rounded-md ${isAvailable ? bg : "bg-ui-bg-component"}`}
       >
         <div className="w-3.5 h-3.5 flex items-center justify-center">
           {icon}
@@ -764,7 +756,7 @@ const DocumentButton = ({
       <Text
         size="xsmall"
         weight="plus"
-        className={`uppercase tracking-wider text-[10px] font-bold ${isAvailable ? "text-ui-fg-base" : "text-ui-fg-muted"}`}
+        className={isAvailable ? "text-ui-fg-base" : "text-ui-fg-muted"}
       >
         {label}
       </Text>

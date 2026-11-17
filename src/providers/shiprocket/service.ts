@@ -1,4 +1,8 @@
 import { quotePackedUnits } from "../../shared/packed-unit-plan"
+import {
+  shipmentPolicy,
+  type ShipmentPolicyOptions,
+} from "../../shared/shipment-policy"
 import { scopedShipmentContext } from "../../shared/cart-shipment-plan"
 import { markFulfillmentRemoteAttempt } from "../../shared/fulfillment-attempt"
 import { readFulfillmentContext } from "../../shared/fulfillment-pickup"
@@ -44,16 +48,17 @@ type InjectedDependencies = {
   logger: Logger
 }
 
-type Options = CourierPolicyOptions & {
-  mode?: "test" | "live"
-  email?: string
-  password?: string
-  cod?: 0 | 1 | "true" | "false"
-  timeout?: number
-  verify_documents?: boolean
-  auto_assign_awb?: boolean
-  assignment_secret?: string
-}
+type Options = CourierPolicyOptions &
+  ShipmentPolicyOptions & {
+    mode?: "test" | "live"
+    email?: string
+    password?: string
+    cod?: 0 | 1 | "true" | "false"
+    timeout?: number
+    verify_documents?: boolean
+    auto_assign_awb?: boolean
+    assignment_secret?: string
+  }
 
 class ShipRocketFulfillmentProviderService extends AbstractFulfillmentProviderService {
   static identifier = "shiprocket"
@@ -69,6 +74,7 @@ class ShipRocketFulfillmentProviderService extends AbstractFulfillmentProviderSe
    */
   static validateOptions(options: Record<string, unknown>): void {
     courierPolicy(options)
+    shipmentPolicy(options)
     if (!options.email || !options.password) {
       throw new Error("Shiprocket requires API-user email and password")
     }
@@ -81,6 +87,7 @@ class ShipRocketFulfillmentProviderService extends AbstractFulfillmentProviderSe
     super()
     this.logger_ = logger
     this.options_ = options
+    shipmentPolicy(options)
     this.client = new ShiprocketClient({
       courier_selection: options.courier_selection,
       courier_fallback: options.courier_fallback,
@@ -150,6 +157,7 @@ class ShipRocketFulfillmentProviderService extends AbstractFulfillmentProviderSe
       const trustedContext = scopedShipmentContext(
         {
           ...context,
+          shiprocket_shipment_policy: shipmentPolicy(this.options_),
           shiprocket_quote_option_id: _optionData.shiprocket_option_id,
           shiprocket_quote_account_scope: pickupScope(
             shiprocketApiUrl(this.options_.mode),
