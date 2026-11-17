@@ -68,7 +68,11 @@ function setup(t: any) {
   t.after(() => {
     axios.defaults.adapter = adapter
     resetShiprocketManager()
-    for (const key of ["SHIPROCKET_EMAIL", "SHIPROCKET_PASSWORD", "SHIPROCKET_VERIFY_DOCUMENTS"]) {
+    for (const key of [
+      "SHIPROCKET_EMAIL",
+      "SHIPROCKET_PASSWORD",
+      "SHIPROCKET_VERIFY_DOCUMENTS",
+    ]) {
       if (env[key] === undefined) delete process.env[key]
       else process.env[key] = env[key]
     }
@@ -161,6 +165,7 @@ test("pickup requires semantic confirmation and preserves the carrier slot", asy
   const f = setup(t)
   assert.deepEqual(await f.client.requestPickup("42"), {
     scheduled: true,
+    raw_response: f.state.pickup,
     pickup_scheduled_date: "2026-11-18 10:00:00",
   })
   assert.deepEqual(f.calls.find((c) => c.url.endsWith("/pickup")).data, {
@@ -270,8 +275,14 @@ test("already manifested exact shipment uses print with order_ids, unrelated fai
   )
   assert.ok(!f.calls.some((c) => c.url === "/manifests/print"))
   f.state.manifestError.response.data.already_manifested_shipment_ids = "42"
-  assert.equal((await f.client.createDocuments(f.fulfillment.data, { pickupConfirmed: true })).manifest, "")
-
+  assert.equal(
+    (
+      await f.client.createDocuments(f.fulfillment.data, {
+        pickupConfirmed: true,
+      })
+    ).manifest,
+    ""
+  )
 })
 
 test("pickup route persists acknowledgement and retry reads existing pickup without another POST", async (t) => {
@@ -418,4 +429,98 @@ test("carrier dates reject invalid values and handle IST, date-only and zoned va
   )
   for (const value of [null, "", "invalid"])
     assert.equal(carrierDate(value), undefined)
+})
+
+test("pickup error overrides retained dates and saved confirmation during document sync", async (t) => {
+  const f = setup(t)
+  f.state.shipment.status = 13
+  f.state.shipment.pickup_generated_date = "2026-11-17 16:45:00"
+  f.state.shipment.pickup_token_number = "old-attempt"
+  f.fulfillment.data.shiprocket_pickup_confirmed = true
+  assert.deepEqual(
+    await f.client.inspectPickup(f.fulfillment.data, "AWB123456"),
+    { scheduled: false, can_schedule: true, failed: true }
+  )
+  const result = await f.route(syncRoute)
+  assert.equal(result.status, 200)
+  assert.equal(f.fulfillment.data.shiprocket_pickup_confirmed, false)
+  assert.equal(f.fulfillment.data.shiprocket_pickup_error, true)
+  assert.ok(
+    !f.calls.some((c) =>
+      [
+        "/manifests/generate",
+        "/manifests/print",
+        "/courier/generate/pickup",
+      ].includes(c.url)
+    )
+  )
+  assert.ok(f.calls.some((c) => c.url === "/courier/generate/label"))
+  assert.ok(f.calls.some((c) => c.url === "/orders/print/invoice"))
+  assert.match(
+    f.fulfillment.data.shiprocket_document_status.manifest.message,
+    /Pickup Error/
+  )
+  f.state.shipment.status = 3
+  f.state.tracking = { tracking_data: { track_status: 1, current_status: 13 } }
+  const recovered = await f.route(syncRoute)
+  assert.equal(f.fulfillment.data.shiprocket_pickup_error, false)
+  assert.equal(f.fulfillment.data.shiprocket_pickup_confirmed, true)
+  assert.equal(recovered.result.tracking.current_status, "Pickup Scheduled")
+  assert.deepEqual(f.fulfillment.data.shiprocket_document_status, {})
+})
+
+test("an explicit pickup action retries a verified pickup error with the documented retry status", async (t) => {
+  const f = setup(t)
+  f.state.shipment.status = 13
+  f.state.shipment.pickup_generated_date = "2026-11-17 16:45:00"
+  f.fulfillment.data.shiprocket_pickup_pending = true
+  f.fulfillment.data.shiprocket_pickup_confirmed = true
+  const result = await f.route(pickupRoute)
+  assert.equal(result.status, 200)
+  assert.deepEqual(
+    f.calls.find((c) => c.url === "/courier/generate/pickup").data,
+    { shipment_id: [42], status: "retry" }
+  )
+  assert.equal(f.fulfillment.data.shiprocket_pickup_pending, false)
+  assert.equal(f.fulfillment.data.shiprocket_pickup_error, false)
+})
+
+test("successful pickup stores the entire original JSON and preserves it across readback and rejection", async (t) => {
+  const f = setup(t)
+  const raw = {
+    pickup_status: 1,
+    response: {
+      pickup_scheduled_date: "2021-12-10 12:39:54",
+      pickup_token_number: "Reference No: 194_BIGFOOT 1966840_11122021",
+      status: 3,
+      others: JSON.stringify({
+        tier_id: 5,
+        etd_hours: JSON.stringify({ assign_to_pick: 6.9 }),
+        routing_code: "S2/S-69/1B/016",
+        shipment_metadata: { type: "ship", platform: "desktop" },
+      }),
+      pickup_generated_date: {
+        date: "2021-12-10 12:39:54.034695",
+        timezone_type: 3,
+        timezone: "Asia/Kolkata",
+      },
+      data: "Pickup is confirmed for AWB :- AWB123456",
+    },
+    additional_carrier_field: { keep: [1, "two", null] },
+  }
+  f.state.pickup = raw
+  assert.equal((await f.route(pickupRoute)).status, 200)
+  assert.deepEqual(f.fulfillment.data.shiprocket_pickup_response, raw)
+  assert.equal(
+    f.fulfillment.data.shiprocket_pickup_response.response.others,
+    raw.response.others
+  )
+  f.state.shipment.status = 3
+  await f.route(pickupRoute)
+  await f.route(syncRoute)
+  assert.deepEqual(f.fulfillment.data.shiprocket_pickup_response, raw)
+  f.state.shipment.status = 13
+  f.state.pickup = { pickup_status: 0, response: "Courier not available" }
+  assert.equal((await f.route(pickupRoute)).status, 400)
+  assert.deepEqual(f.fulfillment.data.shiprocket_pickup_response, raw)
 })

@@ -426,15 +426,19 @@ const ShiprocketDocumentsWidget = ({ data }: DetailWidgetProps<AdminOrder>) => {
   const humanStatus = humanizeStatus(displayStatus)
 
   // Check if pickup is already scheduled based on scans or direct property
+  const pickupFailed =
+    shiprocketFulfillment?.data?.shiprocket_pickup_error === true ||
+    /pickup error/i.test(String(tracking?.current_status || ""))
   const isScheduled =
-    tracking?.pickup_confirmed ||
-    shiprocketFulfillment?.data?.shiprocket_pickup_confirmed ||
-    tracking?.scans?.some(
-      (s: any) =>
-        s.activity?.toUpperCase().includes("SCHEDULED") ||
-        s.status?.toUpperCase().includes("SCHEDULED")
-    ) ||
-    tracking?.pickup_scheduled_date
+    !pickupFailed &&
+    (tracking?.pickup_confirmed ||
+      shiprocketFulfillment?.data?.shiprocket_pickup_confirmed ||
+      tracking?.scans?.some(
+        (s: any) =>
+          s.activity?.toUpperCase().includes("SCHEDULED") ||
+          s.status?.toUpperCase().includes("SCHEDULED")
+      ) ||
+      tracking?.pickup_scheduled_date)
 
   return (
     <Container className="p-0 overflow-hidden border border-ui-border-base bg-ui-bg-base/50 shadow-elevation-card-rest">
@@ -623,7 +627,9 @@ const ShiprocketDocumentsWidget = ({ data }: DetailWidgetProps<AdminOrder>) => {
                     ? "Scheduling…"
                     : isScheduled
                       ? "Pickup scheduled"
-                      : "Schedule pickup"}
+                      : pickupFailed
+                        ? "Retry pickup"
+                        : "Schedule pickup"}
                 </Button>
               )}
               {awb &&

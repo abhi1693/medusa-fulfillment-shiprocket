@@ -104,7 +104,11 @@ export const POST = async (
               "PICKUP_STATE",
               "Shipment is not in a state that permits pickup scheduling"
             )
-          if (!existing.scheduled && fulfillment.data.shiprocket_pickup_pending)
+          if (
+            !existing.scheduled &&
+            !existing.failed &&
+            fulfillment.data.shiprocket_pickup_pending
+          )
             return fail(
               res,
               409,
@@ -112,8 +116,10 @@ export const POST = async (
               "An earlier pickup request is unresolved. Verify it in Shiprocket before another request."
             )
           const savedConfirmation =
+            !existing.failed &&
             fulfillment.data.shiprocket_pickup_confirmed === true
           let pickup: {
+            raw_response?: Record<string, unknown>
             scheduled: boolean
             uncertain?: boolean
             pickup_scheduled_date?: string
@@ -130,9 +136,22 @@ export const POST = async (
           else {
             // A crash or transport timeout must not make the next request replay a booking.
             await fulfillmentService.updateFulfillment(fulfillmentId, {
-              data: { ...fulfillment.data, shiprocket_pickup_pending: true },
+              data: {
+                ...fulfillment.data,
+                shiprocket_pickup_pending: true,
+                ...(existing.failed
+                  ? {
+                      shiprocket_pickup_confirmed: false,
+                      shiprocket_pickup_error: true,
+                    }
+                  : {}),
+              },
             })
-            pickup = await client.requestPickup(shipmentId)
+            pickup = await client.requestPickup(
+              shipmentId,
+              undefined,
+              existing.failed === true
+            )
           }
 
           if (pickup.scheduled) {
@@ -141,7 +160,11 @@ export const POST = async (
               data: {
                 ...fulfillment.data,
                 shiprocket_pickup_confirmed: true,
+                shiprocket_pickup_error: false,
                 shiprocket_pickup_pending: false,
+                ...(pickup.raw_response
+                  ? { shiprocket_pickup_response: pickup.raw_response }
+                  : {}),
                 ...(pickup.pickup_scheduled_date
                   ? {
                       shiprocket_pickup_scheduled_date:
@@ -162,7 +185,16 @@ export const POST = async (
           } else {
             if (!pickup.uncertain)
               await fulfillmentService.updateFulfillment(fulfillmentId, {
-                data: { ...fulfillment.data, shiprocket_pickup_pending: false },
+                data: {
+                  ...fulfillment.data,
+                  shiprocket_pickup_pending: false,
+                  ...(existing.failed
+                    ? {
+                        shiprocket_pickup_confirmed: false,
+                        shiprocket_pickup_error: true,
+                      }
+                    : {}),
+                },
               })
             return fail(
               res,

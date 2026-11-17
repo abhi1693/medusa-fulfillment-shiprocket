@@ -1596,9 +1596,11 @@ export default class ShiprocketClient {
   /** Keep the carrier acknowledgement: HTTP success alone is not pickup success. */
   async requestPickup(
     shipmentId: number | string,
-    date?: Date
+    date?: Date,
+    retry = false
   ): Promise<{
     scheduled: boolean
+    raw_response?: Record<string, unknown>
     message?: string
     uncertain?: boolean
     pickup_scheduled_date?: string
@@ -1611,7 +1613,10 @@ export default class ShiprocketClient {
     )
       return { scheduled: false }
     try {
-      const payload: Record<string, unknown> = { shipment_id: [id] }
+      const payload: Record<string, unknown> = {
+        shipment_id: [id],
+        ...(retry ? { status: "retry" } : {}),
+      }
       // Omitting a date lets Shiprocket select the next available pickup slot.
       if (date)
         payload.pickup_date = [
@@ -1633,6 +1638,7 @@ export default class ShiprocketClient {
         )
       return {
         scheduled,
+        ...(scheduled ? { raw_response: res.data } : {}),
         ...(!scheduled
           ? {
               message: this.carrierFailure(body),
@@ -1663,6 +1669,7 @@ export default class ShiprocketClient {
   ): Promise<{
     scheduled: boolean
     can_schedule: boolean
+    failed?: boolean
     pickup_scheduled_date?: string
   }> {
     const id = Number(fulfillment.shipment_id)
@@ -1691,17 +1698,25 @@ export default class ShiprocketClient {
         "Shiprocket shipment is cancelled or cancellation is pending"
       )
     const code = Number(shipment.status_id ?? shipment.status)
+    const failed =
+      code === 13 || /^pickup error$/i.test(String(shipment.status))
     const canSchedule =
-      [1, 2].includes(code) || /^AWB ASSIGNED$/i.test(String(shipment.status))
+      failed ||
+      [1, 2].includes(code) ||
+      /^AWB ASSIGNED$/i.test(String(shipment.status))
     const date = shipment.pickup_scheduled_date
     const scheduled =
-      Number(shipment.status_id ?? shipment.status) === 3 ||
-      /^(pickup generated|pickup scheduled)$/i.test(String(shipment.status)) ||
-      !!shipment.pickup_token_number ||
-      !!shipment.pickup_generated_date
+      !failed &&
+      (Number(shipment.status_id ?? shipment.status) === 3 ||
+        /^(pickup generated|pickup scheduled)$/i.test(
+          String(shipment.status)
+        ) ||
+        !!shipment.pickup_token_number ||
+        !!shipment.pickup_generated_date)
     return {
       scheduled,
       can_schedule: canSchedule,
+      ...(failed ? { failed: true } : {}),
       ...(scheduled && typeof date === "string" && date
         ? { pickup_scheduled_date: date }
         : {}),
@@ -1832,7 +1847,11 @@ export default class ShiprocketClient {
    */
   async createDocuments(
     fulfillment: any,
-    options: { pickupConfirmed?: boolean; awbConfirmed?: boolean } = {}
+    options: {
+      pickupConfirmed?: boolean
+      awbConfirmed?: boolean
+      pickupFailed?: boolean
+    } = {}
   ): Promise<{
     manifest: string
     label: string
@@ -1849,6 +1868,12 @@ export default class ShiprocketClient {
     )
       throw new Error("Valid Shiprocket order and shipment IDs are required")
     const status: Record<string, DocumentCheck> = {}
+    if (options.pickupFailed)
+      status.manifest = {
+        available: false,
+        message:
+          "Shiprocket reports Pickup Error. Retry pickup before generating a manifest.",
+      }
     const post = async (
       path: string,
       payload: any,
@@ -1908,7 +1933,7 @@ export default class ShiprocketClient {
       return ""
     }
     const [manifest, label, invoice] = await Promise.all([
-      options.pickupConfirmed
+      options.pickupConfirmed && !options.pickupFailed
         ? post(
             "/manifests/generate",
             { shipment_id: [shipmentId] },
@@ -1938,7 +1963,7 @@ export default class ShiprocketClient {
       manifest,
       label,
       invoice,
-      ...(this.verifyDocuments ? { status } : {}),
+      ...(this.verifyDocuments || options.pickupFailed ? { status } : {}),
     }
   }
 

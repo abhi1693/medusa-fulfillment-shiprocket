@@ -64,7 +64,12 @@ export const POST = async (
           const fulfillmentId = (req.body as any)?.fulfillment_id
           let fulfillment: any
           let pickup:
-            { scheduled: boolean; pickup_scheduled_date?: string } | undefined
+            | {
+                scheduled: boolean
+                failed?: boolean
+                pickup_scheduled_date?: string
+              }
+            | undefined
           if (fulfillmentId !== undefined) {
             if (
               typeof fulfillmentId !== "string" ||
@@ -98,7 +103,8 @@ export const POST = async (
               pickup = await client.inspectPickup(fulfillment.data, awb)
               if (
                 fulfillment.data.shiprocket_pickup_confirmed === true &&
-                !pickup.scheduled
+                !pickup.scheduled &&
+                !pickup.failed
               ) {
                 pickup = {
                   ...pickup,
@@ -147,11 +153,15 @@ export const POST = async (
               ["Unknown", "AWB Assigned", "Pending"].includes(savedStatus))
               ? "Pickup Scheduled"
               : savedStatus
-          let status: any =
-            trackingData.current_status ||
-            trackingData.shipment_track?.[0]?.current_status ||
-            pickupStatus ||
-            "Unknown"
+          let status: any = pickup?.failed
+            ? "Pickup Error"
+            : trackingData.current_status ||
+              trackingData.shipment_track?.[0]?.current_status ||
+              pickupStatus ||
+              "Unknown"
+
+          if (pickup?.scheduled && /^(pickup error|13)$/i.test(String(status)))
+            status = "Pickup Scheduled"
 
           // Shiprocket Status Map
           const statusMap: Record<string | number, string> = {
@@ -243,7 +253,10 @@ export const POST = async (
                     order_id:
                       fulfillment.data.sr_order_id || fulfillment.data.order_id,
                   },
-                  { pickupConfirmed: pickup?.scheduled === true }
+                  {
+                    pickupConfirmed: pickup?.scheduled === true,
+                    pickupFailed: pickup.failed === true,
+                  }
                 )
 
                 logger.debug(
@@ -255,11 +268,11 @@ export const POST = async (
                 const nextData: Record<string, unknown> = {
                   ...fulfillment.data,
                 }
-                if (docs.status)
-                  nextData.shiprocket_document_status = docs.status
+                nextData.shiprocket_document_status = docs.status || {}
                 if (pickup)
                   nextData.shiprocket_pickup_confirmed = pickup.scheduled
-                if (pickup?.scheduled)
+                nextData.shiprocket_pickup_error = pickup.failed === true
+                if (pickup?.scheduled || pickup.failed)
                   nextData.shiprocket_pickup_pending = false
                 if (pickup?.pickup_scheduled_date)
                   nextData.shiprocket_pickup_scheduled_date =
