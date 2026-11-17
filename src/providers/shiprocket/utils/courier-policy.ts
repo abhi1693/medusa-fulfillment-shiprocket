@@ -22,12 +22,8 @@ export type CourierPolicyOptions = {
 export function courierPolicy(
   options: CourierPolicyOptions = {}
 ): CourierPolicy {
-  const selection =
-    options.courier_selection ??
-    process.env.SHIPROCKET_COURIER_SELECTION ??
-    "lowest_price"
-  const pod =
-    options.pod_requirement ?? process.env.SHIPROCKET_POD_REQUIREMENT ?? "any"
+  const selection = options.courier_selection ?? "lowest_price"
+  const pod = options.pod_requirement ?? "any"
   if (!["lowest_price", "highest_rating"].includes(selection))
     throw Error(
       "SHIPROCKET_COURIER_SELECTION must be lowest_price or highest_rating"
@@ -40,17 +36,10 @@ export function courierPolicy(
         throw Error(key + " must be true or false")
       return value
     }
-    const raw = process.env[key] ?? "false"
-    if (!["true", "false"].includes(raw))
-      throw Error(key + " must be true or false")
-    return raw === "true"
+    return false
   }
-  const fallback =
-    options.courier_fallback ??
-    process.env.SHIPROCKET_COURIER_FALLBACK ??
-    "relax_preferences"
-  const preferredPod =
-    options.preferred_pod ?? process.env.SHIPROCKET_PREFERRED_POD ?? "any"
+  const fallback = options.courier_fallback ?? "relax_preferences"
+  const preferredPod = options.preferred_pod ?? "any"
   if (!["none", "relax_preferences"].includes(fallback))
     throw Error("SHIPROCKET_COURIER_FALLBACK must be none or relax_preferences")
   if (!["any", "instant", "on_request"].includes(preferredPod))
@@ -315,7 +304,8 @@ export function courierDecisionRows(
     const q = courierQuote(row, policy)
     if (!q) return { status: "rejected", reasons: ["invalid_identity_or_rate"] }
     const reasons: string[] = []
-    if (requireKnownService && q.service === null) reasons.push("unknown_service")
+    if (requireKnownService && q.service === null)
+      reasons.push("unknown_service")
     if (allowed?.length && !allowed.includes(q.courier_company_id))
       reasons.push("not_in_allowed_couriers")
     if (policy.require_real_time_tracking && q.realtime_tracking !== true)

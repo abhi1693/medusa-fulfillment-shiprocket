@@ -63,17 +63,26 @@ async function pendingRouteFixture(t: any) {
   }
   const scope = {
     resolve: (key: string) =>
-      key === "logger"
-        ? { info() {}, warn() {}, error() {}, debug() {} }
-        : key === "locking"
-          ? { execute: async (_key: string, fn: any) => fn() }
-          : {
-              retrieveFulfillment: async () => saved,
-              updateFulfillment: async (_id: string, input: any) => {
-                saved = { ...saved, ...input }
-                return saved
+      key === "shiprocketConnection"
+        ? {
+            runtime: async () => ({
+              email: process.env.SHIPROCKET_EMAIL,
+              password: process.env.SHIPROCKET_PASSWORD,
+              mode: process.env.SHIPROCKET_MODE ?? "test",
+              assignment_secret: assignmentKey,
+            }),
+          }
+        : key === "logger"
+          ? { info() {}, warn() {}, error() {}, debug() {} }
+          : key === "locking"
+            ? { execute: async (_key: string, fn: any) => fn() }
+            : {
+                retrieveFulfillment: async () => saved,
+                updateFulfillment: async (_id: string, input: any) => {
+                  saved = { ...saved, ...input }
+                  return saved
+                },
               },
-            },
   }
   const call = async (route: any, body?: any) => {
     const res: any = {
@@ -768,7 +777,7 @@ test("rate diagnostics explain cache, rejection, fallback and selection without 
   const before = messages.length
   process.env.SHIPROCKET_RATE_DIAGNOSTICS = "false"
   await f.client.quotes(input)
-  assert.equal(messages.length, before)
+  assert.ok(messages.length > before)
 })
 
 test("overall quote diagnostics preserve unknown-service eligibility while checkout excludes it", async (t) => {
@@ -1783,4 +1792,39 @@ test("a confirmed retry timeout keeps its new pending attempt and consumes the c
   assert.ok(f.saved().data.shiprocket_awb_attempt_id)
   assert.equal((await f.call(retryAwbRoute, body)).statusCode, 409)
   assert.equal(f.calls.filter((c) => c.url === "/courier/assign/awb").length, 1)
+})
+
+test("database client settings override legacy diagnostics and disable cached rate reuse", async (t) => {
+  const old = process.env.SHIPROCKET_RATE_DIAGNOSTICS
+  process.env.SHIPROCKET_RATE_DIAGNOSTICS = "true"
+  t.after(() => {
+    if (old === undefined) delete process.env.SHIPROCKET_RATE_DIAGNOSTICS
+    else process.env.SHIPROCKET_RATE_DIAGNOSTICS = old
+  })
+  const messages: string[] = []
+  const f = setup(t, {
+    rate_diagnostics: false,
+    rate_cache_ttl_ms: 0,
+    timeout: 90000,
+    logger: {
+      info: (v: string) => messages.push(v),
+      debug() {},
+      warn() {},
+      error() {},
+    },
+  })
+  const input = {
+    pickup_postcode: "110077",
+    delivery_postcode: "122001",
+    weight: 1,
+    cod: 0,
+  }
+  await f.client.quotes(input)
+  await f.client.quotes(input)
+  assert.equal(
+    f.calls.filter((c) => c.url === "/courier/serviceability/").length,
+    2
+  )
+  assert.ok(f.calls.every((c) => c.timeout === 90000))
+  assert.ok(!messages.some((m) => m.startsWith("Shiprocket rate ")))
 })

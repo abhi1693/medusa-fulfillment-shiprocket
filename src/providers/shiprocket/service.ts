@@ -44,12 +44,21 @@ import {
   pickupScope,
 } from "../../shared/pickup-mapping"
 
+import type { Connection } from "../../modules/shiprocket-connection/service"
+
 type InjectedDependencies = {
+  shiprocketConnection?: {
+    runtime(): Promise<Connection>
+    runtimeSettings?(): Promise<
+      Partial<import("../../shared/operational-settings").OperationalSettings>
+    >
+  }
   logger: Logger
 }
 
 type Options = CourierPolicyOptions &
   ShipmentPolicyOptions & {
+    credential_store?: boolean
     mode?: "test" | "live"
     email?: string
     password?: string
@@ -65,6 +74,12 @@ class ShipRocketFulfillmentProviderService extends AbstractFulfillmentProviderSe
 
   protected logger_: Logger
   protected options_: Options
+  private connectionService?: {
+    runtime(): Promise<Connection>
+    runtimeSettings?(): Promise<
+      Partial<import("../../shared/operational-settings").OperationalSettings>
+    >
+  }
   protected client: ShiprocketClient
 
   /**
@@ -73,9 +88,11 @@ class ShipRocketFulfillmentProviderService extends AbstractFulfillmentProviderSe
    * @throws Error if required options are missing
    */
   static validateOptions(options: Record<string, unknown>): void {
-    courierPolicy(options)
-    shipmentPolicy(options)
-    if (!options.email || !options.password) {
+    if (!options.credential_store) {
+      courierPolicy(options)
+      shipmentPolicy(options)
+    }
+    if (!options.credential_store && (!options.email || !options.password)) {
       throw new Error("Shiprocket requires API-user email and password")
     }
   }
@@ -83,45 +100,58 @@ class ShipRocketFulfillmentProviderService extends AbstractFulfillmentProviderSe
   /**
    * Constructs a new instance of the ShipRocketFulfillmentProviderService.
    */
-  constructor({ logger }: InjectedDependencies, options: Options) {
+  constructor(dependencies: InjectedDependencies, options: Options) {
     super()
+    const logger = dependencies.logger
+    this.connectionService = options.credential_store
+      ? dependencies.shiprocketConnection
+      : undefined
     this.logger_ = logger
     this.options_ = options
-    shipmentPolicy(options)
-    this.client = new ShiprocketClient({
-      courier_selection: options.courier_selection,
-      courier_fallback: options.courier_fallback,
-      preferred_real_time_tracking: options.preferred_real_time_tracking,
-      preferred_pod: options.preferred_pod,
-      preferred_call_before_delivery: options.preferred_call_before_delivery,
-      require_real_time_tracking: options.require_real_time_tracking,
-      pod_requirement: options.pod_requirement,
-      require_call_before_delivery: options.require_call_before_delivery,
-      email: options.email,
-      mode: options.mode,
-      password: options.password,
-      timeout: options.timeout,
-      auto_assign_awb: options.auto_assign_awb,
-      verify_documents: options.verify_documents,
-      assignment_secret: options.assignment_secret,
-      logger: logger,
-    })
+    if (!options.credential_store) shipmentPolicy(options)
+    if (!options.credential_store)
+      this.client = new ShiprocketClient({ ...options, logger })
 
     this.logger_.info("Shiprocket fulfillment provider initialized")
+  }
+
+  protected async operationalSettings() {
+    return this.connectionService?.runtimeSettings
+      ? this.connectionService.runtimeSettings()
+      : (this.options_ as Partial<
+          import("../../shared/operational-settings").OperationalSettings
+        >)
+  }
+  private async runtime() {
+    if (!this.options_.credential_store)
+      return { options: this.options_, client: this.client }
+    if (!this.connectionService)
+      throw Error("Shiprocket credential store dependency is missing")
+    const options = {
+      ...this.options_,
+      ...(await this.connectionService.runtime()),
+    }
+    return {
+      options,
+      client: new ShiprocketClient({ ...options, logger: this.logger_ }),
+    }
   }
 
   /**
    * Returns the fulfillment options for Shiprocket.
    */
   async getFulfillmentOptions(): Promise<FulfillmentOption[]> {
+    const settings = await this.operationalSettings()
+    if (settings.enabled === false) return []
+    const { options, client } = await this.runtime()
     return [
       {
         id: "shiprocket-standard",
         name: "Standard Shipping",
-        shiprocket_policy: courierPolicy(this.options_),
+        shiprocket_policy: courierPolicy(options),
         shiprocket_account_scope: pickupScope(
-          shiprocketApiUrl(this.options_.mode),
-          this.options_.email || ""
+          shiprocketApiUrl(options.mode),
+          options.email || ""
         ),
         is_return: false,
       },
@@ -137,7 +167,7 @@ class ShipRocketFulfillmentProviderService extends AbstractFulfillmentProviderSe
    * Determines whether the fulfillment option can calculate the shipping rate.
    */
   async canCalculate(_data: CreateShippingOptionDTO): Promise<boolean> {
-    return true
+    return (await this.operationalSettings()).enabled !== false
   }
 
   /**
@@ -153,15 +183,21 @@ class ShipRocketFulfillmentProviderService extends AbstractFulfillmentProviderSe
       shiprocket_quotes: unknown[]
     }
   > {
+    if ((await this.operationalSettings()).enabled === false)
+      throw new MedusaError(
+        MedusaError.Types.NOT_ALLOWED,
+        "Shiprocket is disabled in Admin settings"
+      )
+    const { options, client } = await this.runtime()
     try {
       const trustedContext = scopedShipmentContext(
         {
           ...context,
-          shiprocket_shipment_policy: shipmentPolicy(this.options_),
+          shiprocket_shipment_policy: shipmentPolicy(options),
           shiprocket_quote_option_id: _optionData.shiprocket_option_id,
           shiprocket_quote_account_scope: pickupScope(
-            shiprocketApiUrl(this.options_.mode),
-            this.options_.email || ""
+            shiprocketApiUrl(options.mode),
+            options.email || ""
           ),
         },
         _optionData.shiprocket_option_id
@@ -190,7 +226,7 @@ class ShipRocketFulfillmentProviderService extends AbstractFulfillmentProviderSe
         const verified = readCourierQuote(
           selected,
           trustedContext,
-          courierPolicy(this.options_)
+          courierPolicy(options)
         )
         return {
           calculated_amount: verified.quote.amount,
@@ -201,11 +237,11 @@ class ShipRocketFulfillmentProviderService extends AbstractFulfillmentProviderSe
       }
       const { params, choices } = await quotePackedUnits(
         trustedContext,
-        (input) => this.client.quotes(input)
+        (input) => client.quotes(input)
       )
       const quote = [...choices].sort(
         (a, b) =>
-          (courierPolicy(this.options_).selection === "highest_rating"
+          (courierPolicy(options).selection === "highest_rating"
             ? b.rating! - a.rating!
             : 0) ||
           a.amount - b.amount ||
@@ -247,20 +283,23 @@ class ShipRocketFulfillmentProviderService extends AbstractFulfillmentProviderSe
     const orderId = order?.id || "unknown"
     this.logger_.info(`Shiprocket: Creating fulfillment for order ${orderId}`)
 
+    if ((await this.operationalSettings()).enabled === false)
+      throw new MedusaError(
+        MedusaError.Types.NOT_ALLOWED,
+        "Shiprocket is disabled in Admin settings"
+      )
+    const { options, client } = await this.runtime()
     try {
       const context = readFulfillmentContext(
         additionalData?.shiprocket_pickup_preflight,
         order?.id,
         fulfillment.shipping_option_id,
         fulfillment.location_id,
-        pickupScope(
-          shiprocketApiUrl(this.options_.mode),
-          this.options_.email || process.env.SHIPROCKET_EMAIL || ""
-        ),
+        pickupScope(shiprocketApiUrl(options.mode), options.email || ""),
         data.shiprocket_quote
       )
       const pickup = context.pickup
-      const externalData = await this.client.create(
+      const externalData = await client.create(
         fulfillment,
         items,
         { ...order, billing_address: context.billing_address },
@@ -286,9 +325,9 @@ class ShipRocketFulfillmentProviderService extends AbstractFulfillmentProviderSe
       )
 
       const documents =
-        this.options_.auto_assign_awb === false
+        options.auto_assign_awb === false
           ? { label: "", manifest: "", invoice: "", status: undefined }
-          : await this.client.createDocuments(externalData, {
+          : await client.createDocuments(externalData, {
               awbConfirmed: !!externalData.awb,
             })
       const { label, manifest, invoice } = documents
@@ -336,6 +375,7 @@ class ShipRocketFulfillmentProviderService extends AbstractFulfillmentProviderSe
    * Cancels a fulfillment in Shiprocket.
    */
   async cancelFulfillment(data: Record<string, unknown>): Promise<void> {
+    const { options, client } = await this.runtime()
     if (data.shiprocket_reconciled_existing) {
       throw new MedusaError(
         MedusaError.Types.NOT_ALLOWED,
@@ -353,7 +393,7 @@ class ShipRocketFulfillmentProviderService extends AbstractFulfillmentProviderSe
 
     this.logger_.info(`Shiprocket: Cancelling fulfillment for order ${orderId}`)
 
-    await this.client.cancel(orderId)
+    await client.cancel(orderId)
 
     this.logger_.info(`Shiprocket: Fulfillment cancelled for order ${orderId}`)
   }
@@ -364,6 +404,7 @@ class ShipRocketFulfillmentProviderService extends AbstractFulfillmentProviderSe
   async createReturnFulfillment(
     fulfillment: Record<string, any>
   ): Promise<CreateFulfillmentResult> {
+    const { options, client } = await this.runtime()
     this.logger_.info(`Shiprocket: Creating return fulfillment`)
 
     try {
@@ -514,9 +555,7 @@ class ShipRocketFulfillmentProviderService extends AbstractFulfillmentProviderSe
         weight: totalWeight,
       }
 
-      const externalData = (await this.client.createReturn(
-        clientPayload
-      )) as any
+      const externalData = (await client.createReturn(clientPayload)) as any
 
       this.logger_.info(
         `Shiprocket: Return fulfillment created - Order ID: ${externalData.order_id}, ` +
@@ -526,7 +565,7 @@ class ShipRocketFulfillmentProviderService extends AbstractFulfillmentProviderSe
       // Generate label for the return shipment if possible
       let labelUrl = ""
       try {
-        labelUrl = await this.client.generateLabel(externalData)
+        labelUrl = await client.generateLabel(externalData)
       } catch (labelErr: any) {
         this.logger_.warn(
           `Shiprocket: Failed to generate return label: ${labelErr.message}`
@@ -606,19 +645,26 @@ class ShipRocketFulfillmentProviderService extends AbstractFulfillmentProviderSe
     data: Record<string, unknown>,
     _context: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
+    if ((await this.operationalSettings()).enabled === false)
+      throw new MedusaError(
+        MedusaError.Types.NOT_ALLOWED,
+        "Shiprocket is disabled in Admin settings"
+      )
+    const { options, client } = await this.runtime()
     try {
       const trustedContext = {
         ..._context,
+        shiprocket_shipment_policy: shipmentPolicy(options),
         shiprocket_quote_option_id: _optionData.shiprocket_option_id,
         shiprocket_quote_account_scope: pickupScope(
-          shiprocketApiUrl(this.options_.mode),
-          this.options_.email || ""
+          shiprocketApiUrl(options.mode),
+          options.email || ""
         ),
       }
       const verified = readCourierQuote(
         data.shiprocket_quote,
         trustedContext,
-        courierPolicy(this.options_)
+        courierPolicy(options)
       )
       return {
         ...shiprocketCheckoutData(_optionData, data, _context),

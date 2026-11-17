@@ -2,10 +2,15 @@ import type { MedusaContainer } from "@medusajs/framework/types"
 
 const SHIPROCKET_TRACKING_MODULE = "shiprocketTrackingModuleService"
 
-export default async function cleanupShiprocketWebhookPayloadsJob(container: MedusaContainer) {
+export default async function cleanupShiprocketWebhookPayloadsJob(
+  container: MedusaContainer
+) {
   const logger = container.resolve("logger")
   const trackingService = container.resolve<any>(SHIPROCKET_TRACKING_MODULE)
-  const rawRetention = Number(process.env.SHIPROCKET_WEBHOOK_PAYLOAD_RETENTION_DAYS ?? 30)
+  const rawRetention = Number(
+    (await container.resolve<any>("shiprocketConnection").runtimeSettings())
+      .webhook_payload_retention_days
+  )
   const retentionDays = Number.isFinite(rawRetention)
     ? Math.min(Math.max(Math.floor(rawRetention), 1), 365)
     : 30
@@ -38,10 +43,14 @@ export default async function cleanupShiprocketWebhookPayloadsJob(container: Med
       }
     }
     if (totalCleared > 0) {
-      logger.info(`[Shiprocket] Cleanup job cleared raw_payload for ${totalCleared} records older than ${retentionDays} days`)
+      logger.info(
+        `[Shiprocket] Cleanup job cleared raw_payload for ${totalCleared} records older than ${retentionDays} days`
+      )
     }
   } catch (error: any) {
-    logger.error(`[Shiprocket] Cleanup webhook payload job failed: ${error.message}`)
+    logger.error(
+      `[Shiprocket] Cleanup webhook payload job failed: ${error.message}`
+    )
   }
 }
 

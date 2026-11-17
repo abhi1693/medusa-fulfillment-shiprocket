@@ -76,6 +76,7 @@ import type {
 } from "./types"
 
 export default class ShiprocketClient {
+  private diagnostics?: boolean
   private policy: CourierPolicy
   private requestTimeout: number
   private verifyDocuments: boolean
@@ -98,6 +99,8 @@ export default class ShiprocketClient {
       )
     }
 
+    this.diagnostics = options.rate_diagnostics
+    this.CACHE_TTL = options.rate_cache_ttl_ms ?? 300000
     this.requestTimeout = options.timeout ?? SHIPROCKET_DEFAULT_TIMEOUT_MS
     this.verifyDocuments = options.verify_documents ?? false
     this.autoAssignAwb = options.auto_assign_awb ?? true
@@ -108,7 +111,7 @@ export default class ShiprocketClient {
       : options.assignment_secret
     this.accountScope = pickupScope(
       shiprocketApiUrl(options.mode),
-      options.email || process.env.SHIPROCKET_EMAIL || ""
+      options.email || ""
     )
     this.policy = courierPolicy(options)
     this.email = options.email || ""
@@ -306,7 +309,7 @@ export default class ShiprocketClient {
     return this.selectRates(rows, data)
   }
   private logRateInput(data: ShiprocketCalculateRateRequest, source: string) {
-    if (process.env.SHIPROCKET_RATE_DIAGNOSTICS === "false") return
+    if (!(this.diagnostics ?? true)) return
     this.logger?.info(
       "Shiprocket rate input " +
         JSON.stringify({
@@ -359,7 +362,7 @@ export default class ShiprocketClient {
           ]
       return choices
     } finally {
-      if (process.env.SHIPROCKET_RATE_DIAGNOSTICS !== "false")
+      if (this.diagnostics ?? true)
         this.logger?.info(
           "Shiprocket rate decision " +
             JSON.stringify({
@@ -1382,7 +1385,7 @@ export default class ShiprocketClient {
     const snapshot = openAssignment(
       data.shiprocket_deferred_awb,
       fulfillmentId,
-      this.assignmentKey ?? assignmentSecret()
+      assignmentSecret(this.assignmentKey)
     )
     const binding = snapshot.binding as ExistingOrderBinding
     validateExistingBinding(binding)

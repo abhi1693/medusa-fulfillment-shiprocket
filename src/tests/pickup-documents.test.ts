@@ -115,6 +115,14 @@ function setup(t: any) {
         body,
         scope: {
           resolve(key: string) {
+            if (key === "shiprocketConnection")
+              return {
+                runtime: async () => ({
+                  email: process.env.SHIPROCKET_EMAIL,
+                  password: process.env.SHIPROCKET_PASSWORD,
+                  mode: process.env.SHIPROCKET_MODE ?? "test",
+                }),
+              }
             if (key === "logger") return logger
             if (key === "locking")
               return { execute: async (_key: string, job: any) => job() }

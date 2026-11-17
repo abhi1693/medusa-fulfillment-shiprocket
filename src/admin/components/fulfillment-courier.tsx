@@ -506,36 +506,64 @@ export const FulfillmentCourier = ({
                       .filter(Boolean)
                       .join(" · ")
                     return (
-                      <div
+                      <label
                         key={row.courier_company_id}
-                        className="flex flex-col gap-y-1"
-                      >
-                        <RadioGroup.ChoiceBox
-                          value={String(row.courier_company_id)}
-                          label={row.courier_name}
-                          description={description}
-                          disabled={saving || !available}
-                          className="w-full rounded-md px-3 py-2"
-                          aria-label={
-                            row.affordable === false && available
-                              ? `${row.courier_name}, ${price(Math.max(0, row.amount - fresh.remaining_budget))} over budget`
-                              : row.courier_name
-                          }
-                        />
-                        {row.affordable === false && available && (
-                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3">
-                            <Badge color="orange" size="small">
-                              Over budget
-                            </Badge>
-                            <Text size="small" className="text-ui-fg-subtle">
-                              {price(
-                                Math.max(0, row.amount - fresh.remaining_budget)
-                              )}{" "}
-                              over budget
-                            </Text>
-                          </div>
+                        htmlFor={`${id}-courier-${row.courier_company_id}`}
+                        className={clx(
+                          "shadow-borders-base bg-ui-bg-base flex items-start gap-x-2 rounded-md px-3 py-3 transition-fg focus-within:shadow-borders-interactive-with-focus",
+                          saving || !available
+                            ? "cursor-not-allowed opacity-50"
+                            : "cursor-pointer hover:bg-ui-bg-base-hover",
+                          selected === String(row.courier_company_id) &&
+                            "shadow-borders-interactive-with-shadow"
                         )}
-                      </div>
+                      >
+                        <RadioGroup.Item
+                          id={`${id}-courier-${row.courier_company_id}`}
+                          value={String(row.courier_company_id)}
+                          disabled={saving || !available}
+                          className="shrink-0"
+                          aria-describedby={`${id}-courier-${row.courier_company_id}-description`}
+                          aria-label={row.courier_name}
+                        />
+                        <span className="flex min-w-0 flex-1 flex-col gap-y-1">
+                          <Text as="span" size="small" weight="plus">
+                            {row.courier_name}
+                          </Text>
+                          <span
+                            id={`${id}-courier-${row.courier_company_id}-description`}
+                            className="flex flex-col gap-y-2"
+                          >
+                            <Text
+                              as="span"
+                              size="small"
+                              className="text-ui-fg-subtle"
+                            >
+                              {description}
+                            </Text>
+                            {row.affordable === false && available && (
+                              <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                <Badge color="orange" size="small">
+                                  Over budget
+                                </Badge>
+                                <Text
+                                  as="span"
+                                  size="small"
+                                  className="text-ui-fg-subtle"
+                                >
+                                  {price(
+                                    Math.max(
+                                      0,
+                                      row.amount - fresh.remaining_budget
+                                    )
+                                  )}{" "}
+                                  over budget
+                                </Text>
+                              </span>
+                            )}
+                          </span>
+                        </span>
+                      </label>
                     )
                   })}
                 </RadioGroup>

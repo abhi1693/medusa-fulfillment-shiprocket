@@ -1,3 +1,10 @@
+## Unreleased — database-backed Admin settings
+
+- Store one verified test/live connection and encrypted operational settings in the owning module; remove carrier environment fallbacks.
+- Add reusable native Admin connection, shipping and existing pickup-to-location mapping components with revision checks and permission boundaries.
+- Keep deferred AWB signing material in the database, initialize disabled defaults through normal migrations and preserve pending assignments.
+- Remove the redundant location widget and place courier budget details inside selectable cards.
+
 ## Unreleased — fulfillment and manual pickup linking
 
 - Replace automatic pickup-address synchronization with explicit existing-ID linking.

@@ -4,9 +4,7 @@ import {
   createHash,
   randomBytes,
 } from "node:crypto"
-export function assignmentSecret(
-  value = process.env.SHIPROCKET_ASSIGNMENT_SECRET ?? process.env.JWT_SECRET
-): string {
+export function assignmentSecret(value?: string): string {
   if (!value || value.length < 32)
     throw Error(
       "Manual AWB assignment requires an assignment secret of at least 32 characters"

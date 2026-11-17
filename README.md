@@ -1,12 +1,20 @@
 # Medusa fulfillment Shiprocket
 
+## Pickup address mappings
+
+The settings pickup table maps existing Shiprocket pickup addresses to existing Medusa stock locations. It does not create or delete addresses/locations or edit their names, contact details or physical addresses. Create, update and remove change only the established `shiprocket_pickup_id` and `shiprocket_pickup_scope` metadata keys through the public native update workflow. Multiple stock locations may share a pickup; each location keeps one pickup link. Pickup mapping is managed only from the settings table; no location-detail widget is registered.
+
+`GET /admin/shiprocket-pickup-mappings` projects current pickup addresses and location associations; `POST` accepts strict `create`, `update` or `remove` commands bound to the connection scope and the location's revision. A fresh carrier lookup validates references before create/update; remove needs no carrier request. Mapping commands use a per-location public locking-module mutex and recheck native revisions after the carrier read. Stale/different-connection and missing-address associations remain visible for review. Native metadata updates outside these entry points are not a cross-module atomic transaction; no native tables are edited directly.
+
+Consumers authorize reads with their stock-location/settings read capabilities, and writes with the owning stock-location management capability. The Uniek adapter declares these profiles separately from credential-management permissions. The reusable `source/admin/components/pickup-mappings` component takes `canRead` and `canWrite`; the host still enforces server authorization. It renders a searchable, paginated table, existing-record selectors, remove confirmation and read-only/error states. No pickup is scheduled by mapping an address.
+
 ## Multi-item package policy
 
-Provider option `multiple_items` accepts `split_shipment` (default: one carrier order per physical unit) or `single_shipment` (one combined carrier order per pickup/shipping group). Quantity three produces three orders in split mode. Combined mode sums actual weights across quantities and quotes one package. Set `single_shipment_dimensions` to `largest_item` (default: all three dimensions from the greatest-volume unit) or `stacked` (maximum length/width and summed quantity-weighted heights). Environment equivalents are `SHIPROCKET_MULTIPLE_ITEMS` and `SHIPROCKET_SINGLE_SHIPMENT_DIMENSIONS`. Invalid values are rejected at startup. Largest-item dimensions are an approximation, not proof that all contents fit that carton.
+Provider option `multiple_items` accepts `split_shipment` (default: one carrier order per physical unit) or `single_shipment` (one combined carrier order per pickup/shipping group). Quantity three produces three orders in split mode. Combined mode sums actual weights across quantities and quotes one package. Set `single_shipment_dimensions` to `largest_item` (default: all three dimensions from the greatest-volume unit) or `stacked` (maximum length/width and summed quantity-weighted heights). Configure these fields in Shipping → Packing. Invalid values are rejected at startup. Largest-item dimensions are an approximation, not proof that all contents fit that carton.
 
 The paid signed package plan freezes quantities, measurements, strategy and carrier cost. Configuration/catalog changes cannot repartition it; a combined package must be fulfilled together. Existing split plans continue through their saved plan. Checkout pricing, package dispatch, courier selection and timeout recovery all use the same package snapshot. Separate AWB, pickup and document actions continue per resulting native fulfillment. Consumers still supply the public package/courier/recovery adapters described below.
 
-For cables or other items with missing native shipping fields, opt into `missing_measurements: "use_defaults"` (`SHIPROCKET_MISSING_MEASUREMENTS=use_defaults`); the default `reject` preserves strict validation. Only null/undefined fields use defaults. Recorded variant/product values, including small actual weights, remain authoritative; malformed/nonpositive values still fail validation. Defaults are `default_item_weight_grams: 500` and `default_item_length_mm`, `default_item_width_mm`, `default_item_height_mm`: `6`. The weight matches Shiprocket's documented platform default; 6 mm is the smallest whole millimetre above its API's strict >0.5 cm dimension threshold, not a claimed default carton. Each option also accepts a `SHIPROCKET_` uppercase environment equivalent. Custom default weights must be positive; default dimensions must exceed 5 mm. Resolved defaults are frozen into the signed paid measurements and never written back to the catalog.
+For cables or other items with missing native shipping fields, opt into `missing_measurements: "use_defaults"`; the default `reject` preserves strict validation. Only null/undefined fields use defaults. Recorded variant/product values, including small actual weights, remain authoritative; malformed/nonpositive values still fail validation. Defaults are `default_item_weight_grams: 500` and `default_item_length_mm`, `default_item_width_mm`, `default_item_height_mm`: `6`. The weight matches Shiprocket's documented platform default; 6 mm is the smallest whole millimetre above its API's strict >0.5 cm dimension threshold, not a claimed default carton. All operational values come from the saved database settings. Custom default weights must be positive; default dimensions must exceed 5 mm. Resolved defaults are frozen into the signed paid measurements and never written back to the catalog.
 
 Shiprocket fulfillment and live delivery rates for Medusa v2. Package name: `@abhi1693/medusa-fulfillment-shiprocket`. No npm release has been published.
 
@@ -34,14 +42,13 @@ export default defineConfig({
   plugins: [{ resolve: "@abhi1693/medusa-fulfillment-shiprocket", options: {} }],
   modules: [{
     resolve: "@medusajs/medusa/fulfillment",
+    dependencies: ["shiprocketConnection"],
     options: {
       providers: [{
         resolve: "@abhi1693/medusa-fulfillment-shiprocket",
         id: "shiprocket",
         options: {
-          mode: process.env.SHIPROCKET_MODE,
-          email: process.env.SHIPROCKET_EMAIL,
-          password: process.env.SHIPROCKET_PASSWORD,
+          credential_store: true,
         },
       }],
     },
@@ -51,25 +58,23 @@ export default defineConfig({
 
 Run the consuming application's normal `medusa db:migrate`, then start it. Keep manual providers if your store also needs them. There is no store-specific activation switch in this package.
 
-Environment configuration:
+Database configuration:
 
-- `SHIPROCKET_MODE=test|live` (default `test`) selects the endpoint internally. Test-only Origin/Referer headers never go to live mode.
-- `SHIPROCKET_EMAIL` and `SHIPROCKET_PASSWORD`: API credentials. Login generates and caches the bearer token; no static API-token environment setting is required.
-- In Shiprocket **Settings → API**, enable **Buyer's Details Access → Allowed** for this API user as well as its required module permissions. Without buyer access, shipment GETs can return HTTP 200 with `Not Authorized` contact/address values. Existing-shipment verification remains blocked and explains the setting to change. Reauthenticate/restart the consuming backend after changing permissions, then retry the same native order; missing buyer details are never accepted as a match. See the official [API-user setup instructions](https://apidocs.shiprocket.in/?version=latest).
-- `SHIPROCKET_WEBHOOK_TOKEN`: independent inbound webhook secret, at least 32 characters. Configure the same value on the Shiprocket account; do not confuse it with the generated API bearer.
-- `SHIPROCKET_API_TIMEOUT_MS` (default 15000), `SHIPROCKET_WEBHOOK_PAYLOAD_RETENTION_DAYS` (default 30).
+Use the single Admin connection detail page to verify and save the API-user email/password and test/live mode. Manage activation, packing, couriers, timeout/cache, AWB/documents, diagnostics and webhook retention through Shipping settings. Store the same webhook token in Shiprocket's webhook configuration. The default API timeout is 60000 ms. No Shiprocket environment values are read, even when database credentials or settings are missing. Normal schema migrations create one disabled settings row; enabling shipping requires verified credentials and a webhook token. JWT_SECRET remains the deployment encryption/signing root. Internal deferred-AWB signing material is encrypted in the settings record and never exposed by Admin reads.
+
+In Shiprocket **Settings → API**, enable **Buyer's Details Access → Allowed** for this API user as well as its required module permissions. Without buyer access, shipment GETs can return HTTP 200 with `Not Authorized` contact/address values. Existing-shipment verification remains blocked until access is fixed. See the official [API-user setup instructions](https://apidocs.shiprocket.in/?version=latest).
 
 Never commit actual credentials. Sandbox authentication availability and rate limits remain carrier-controlled. Test mode is the validated integration focus; the standalone suite does not certify production carrier behavior.
 
 ## Pickup locations
 
-Create and maintain saved pickup addresses in Shiprocket. On the Medusa location, **Link Shiprocket pickup address** lists the current account's existing addresses and saves the selected remote ID in `metadata.shiprocket_pickup_id`, with its account/mode scope. Linking and unlinking are local operations. No address create/update/sync workflow, subscriber or job remains; remote addresses and historic mappings are preserved. A service zone is still needed for native shipping options.
+Create and maintain saved pickup addresses in Shiprocket. In **Settings → Shiprocket → Pickup mappings**, map a stock location to one of the current account's existing addresses. The table saves the selected remote ID in `metadata.shiprocket_pickup_id`, with its account/mode scope. Linking and unlinking are local operations. No address create/update/sync workflow, subscriber or job remains; remote addresses and historic mappings are preserved. A service zone is still needed for native shipping options.
 
 ## Rates, units and courier choice
 
 Prepaid only. Native unit weights are grams and dimensions millimetres; requests convert to kg/cm. Native attributes must describe each final packed sellable unit. Checkout quotes each distinct unit geometry, charges for every unit and offers only services available to every package. The signed paid quote retains the immutable package plan; later catalog edits do not change it. Native pricing-context hooks load required product measurements. Cart item mutations invalidate the selection without carrier requests; delivery-stage pricing fetches quotes.
 
-`SHIPROCKET_COURIER_SELECTION=lowest_price|highest_rating` defaults to lowest price. Required filters are `SHIPROCKET_REQUIRE_REAL_TIME_TRACKING`, `SHIPROCKET_POD_REQUIREMENT=any|instant|on_request`, `SHIPROCKET_REQUIRE_CALL_BEFORE_DELIVERY`. Unknown capabilities fail required filters. Optional preferences are `SHIPROCKET_PREFERRED_REAL_TIME_TRACKING`, `SHIPROCKET_PREFERRED_POD`, `SHIPROCKET_PREFERRED_CALL_BEFORE_DELIVERY`; `SHIPROCKET_COURIER_FALLBACK=relax_preferences|none` defaults to relaxing optional call-before-delivery, then POD, then tracking, from the same returned list. Required serviceability, prepaid payment, positive cost and hard filters are never relaxed. No undocumented SLA adherence score is invented.
+`courier_selection=lowest_price|highest_rating` defaults to lowest price. Required filters are `require_real_time_tracking`, `pod_requirement=any|instant|on_request`, `require_call_before_delivery`. Unknown capabilities fail required filters. Optional preferences are `preferred_real_time_tracking`, `preferred_pod`, `preferred_call_before_delivery`; `courier_fallback=relax_preferences|none` defaults to relaxing optional call-before-delivery, then POD, then tracking, from the same returned list. Required serviceability, prepaid payment, positive cost and hard filters are never relaxed. No undocumented SLA adherence score is invented.
 
 The quote includes the actual courier identity, price, ETA and any relaxed preferences. Selection must send the displayed signed `shiprocket_quote` in native shipping-method data; provider validation binds it to the cart/origin/account. Fulfillment revalidates the same courier and fails on material changes rather than silently substituting another carrier. Carrier-reported ETA is an estimate. Storefront presentation (such as Standard/Express), customer-price rounding and promotion policy belong to the consuming store; the consuming store merchant rounding adapter is deliberately excluded here.
 
@@ -140,7 +145,7 @@ Shipment review normalizes native India province codes to carrier state names. N
 
 ### Rate diagnostics
 
-Rate calculation emits `Shiprocket rate input` and `Shiprocket rate decision` JSON records through the injected Medusa logger at info level. Set `SHIPROCKET_RATE_DIAGNOSTICS=false` to disable these records (HTTP and failure logging is independent). Inputs report an opaque route/parcel ID, kilograms/centimetres, prepaid mode, cache/API source and policy. Decisions report normalized courier IDs, air/surface service, INR rate, capabilities, hard rejection reasons, unmet preferences, winners and relaxed preferences, plus the ranking and relaxation order. `eligible_not_selected` means the candidate passed hard requirements but lost preference/ranking or explicit-courier selection; the record reports the applicable ranking and winners. No raw carrier response, postcode, customer contact/address, credential or signed token is logged. The correlation ID is diagnostic only, never an authorization or quote identifier. Merchant rounding, tax and presentation logs belong in the consuming application.
+Rate calculation emits `Shiprocket rate input` and `Shiprocket rate decision` JSON records through the injected Medusa logger at info level. Turn off `rate_diagnostics` in Shipping settings to disable these records (HTTP and failure logging is independent). Inputs report an opaque route/parcel ID, kilograms/centimetres, prepaid mode, cache/API source and policy. Decisions report normalized courier IDs, air/surface service, INR rate, capabilities, hard rejection reasons, unmet preferences, winners and relaxed preferences, plus the ranking and relaxation order. `eligible_not_selected` means the candidate passed hard requirements but lost preference/ranking or explicit-courier selection; the record reports the applicable ranking and winners. No raw carrier response, postcode, customer contact/address, credential or signed token is logged. The correlation ID is diagnostic only, never an authorization or quote identifier. Merchant rounding, tax and presentation logs belong in the consuming application.
 
 Authenticated cancellation notifications with an explicitly empty AWB, consistent cancellation statuses, a positive integer Shiprocket order ID and no AWB/pickup assignment dates receive HTTP 200 with `processed: true`, `reason: cancelled_before_awb`, and `sr_order_id`. They emit the public `shiprocket.order.cancelled` event (constant/type in `shared/order-cancellation`) carrying the numeric carrier ID, optional merchant reference, status fields and `before_awb: true`. Process-local dedupe includes the carrier order ID; failed event enqueue remains retryable. This is an advisory refresh hint, not refund evidence or permission to clear a journal, reserve budget or cancel native fulfillment. Retry verifies current carrier state through authenticated GETs even without a webhook. No tracking record or fake AWB is created. Missing/invalid AWBs on other events still return HTTP 400; authentication and rate limits apply first.
 
@@ -186,3 +191,9 @@ Offline tests cover unclassified details, seller actions, malformed fields,
 redaction, cancellation outcomes, HTTP errors and existing-only resume. Native
 consuming tests check that public Medusa error handling preserves the reason and
 action in the HTTP 400 message used by Admin while retaining same-order retry.
+
+### Runtime shipping settings
+
+The single connection module also owns a separate singleton operational-settings snapshot. Consuming Admin pages may import `source/admin/components/operational-settings` alongside the connection and pickup mapping components. Authenticated endpoints are `GET/POST /admin/shiprocket-settings/preferences`; applications must declare resource authorization for `settings.view` and `settings.manage`. Saves require verified credentials, strict validation and an expected revision. Runtime settings cover packing/courier rules, activation, timeouts, caching, AWB/document controls, diagnostics and webhook retention. The webhook token is encrypted, masked on reads and preserved when omitted. Environment values are never runtime fallbacks. Normal migrations initialize the disabled database singleton. Provider registration must remain present; runtime activation determines availability. Keep JWT/encryption root secrets in deployment configuration; deferred-assignment signing material is database-owned.
+
+The settings components follow Medusa's detail-page UX: read-only summary cards with section action menus and Drawer editors. The consuming application's page can organize Connection, Shipping and Pickup mappings with public Tabs. Credential verification and revision checks remain enforced; closing a changed draft asks for confirmation. Essential help stays beside consequential actions rather than under every field.

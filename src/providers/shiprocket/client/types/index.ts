@@ -6,6 +6,8 @@ export interface ShiprocketClientOptions extends importPolicy {
   mode?: "test" | "live"
   email?: string
   password?: string
+  rate_cache_ttl_ms?: number
+  rate_diagnostics?: boolean
   timeout?: number
   verify_documents?: boolean
   auto_assign_awb?: boolean

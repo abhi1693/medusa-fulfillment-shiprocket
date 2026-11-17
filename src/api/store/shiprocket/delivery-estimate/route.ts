@@ -1,3 +1,4 @@
+import { shiprocketConnection } from "../../../../shared/connection"
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import {
   getShiprocketManager,
@@ -58,16 +59,6 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
     cod?: string
   }
 
-  // Validate credentials are configured
-  if (!hasShiprocketCredentials()) {
-    return fail(
-      res,
-      500,
-      "CONFIGURATION_ERROR",
-      "Shiprocket credentials not configured. Set SHIPROCKET_EMAIL and SHIPROCKET_PASSWORD environment variables."
-    )
-  }
-
   // Validate delivery pincode is provided
   if (!delivery_pincode) {
     return fail(
@@ -109,7 +100,10 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
 
   try {
     // Get singleton client manager (reuses token and connection across requests)
-    const manager = getShiprocketManager(logger)
+    const manager = getShiprocketManager(
+      logger,
+      await shiprocketConnection(req.scope)
+    )
     const pickupPincode = pickup_pincode
     if (!pickupPincode)
       return fail(

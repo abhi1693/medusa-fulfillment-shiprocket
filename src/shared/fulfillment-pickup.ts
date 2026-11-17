@@ -1,3 +1,4 @@
+import { shiprocketConnection } from "./connection"
 import { paidPackedUnitPlan, selectPackedUnit } from "./packed-unit-plan"
 import { shipmentLineKey } from "./cart-shipment-plan"
 import { fulfillmentCourier } from "./fulfillment-courier"
@@ -164,17 +165,8 @@ export async function prepareFulfillmentPickup(
     )
   )
     return invalid("Shiprocket is not attached to the fulfillment warehouse")
-  if (
-    !process.env.SHIPROCKET_EMAIL?.trim() ||
-    !process.env.SHIPROCKET_PASSWORD?.trim()
-  )
-    return invalid(
-      "Shiprocket API credentials are missing from the running backend. Reload its configuration before retrying."
-    )
-  const scope = pickupScope(
-    shiprocketApiUrl(),
-    process.env.SHIPROCKET_EMAIL || ""
-  )
+  const connection = await shiprocketConnection(container)
+  const scope = pickupScope(shiprocketApiUrl(connection.mode), connection.email)
   let pickup: PickupSnapshot
   try {
     pickup = await resolveMetadataPickup(
@@ -184,7 +176,10 @@ export async function prepareFulfillmentPickup(
       lookup ||
         (async (id) => {
           const response = await (
-            await getShiprocketManager(container.resolve("logger")).getAxios()
+            await getShiprocketManager(
+              container.resolve("logger"),
+              connection
+            ).getAxios()
           ).get("/settings/company/pickup", { params: { id } })
           return pickupRows(response.data).find((row) => String(row.id) === id)
         })
@@ -196,7 +191,7 @@ export async function prepareFulfillmentPickup(
       code === "INVALID_PICKUP_METADATA_ID"
     )
       return invalid(
-        "Select an existing pickup in the Shiprocket pickup widget on this Medusa location; it saves metadata.shiprocket_pickup_id"
+        "Link this stock location to an existing pickup in Settings → Shiprocket → Pickup mappings."
       )
     if (code === "PICKUP_METADATA_ACCOUNT_CHANGED")
       return invalid(

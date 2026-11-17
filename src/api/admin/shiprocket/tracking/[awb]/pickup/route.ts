@@ -1,3 +1,4 @@
+import { shiprocketConnection } from "../../../../../../shared/connection"
 import type {
   AuthenticatedMedusaRequest,
   MedusaResponse,
@@ -79,19 +80,10 @@ export const POST = async (
           )
         }
 
-        // Ensure credentials exist
-        const email = process.env.SHIPROCKET_EMAIL
-        const password = process.env.SHIPROCKET_PASSWORD
-
-        if (!email || !password) {
-          throw new Error(
-            "Shiprocket credentials (SHIPROCKET_EMAIL, SHIPROCKET_PASSWORD) missing in environment"
-          )
-        }
+        const connection = await shiprocketConnection(req.scope)
 
         const client = new ShiprocketClient({
-          email,
-          password,
+          ...connection,
           logger,
         })
 

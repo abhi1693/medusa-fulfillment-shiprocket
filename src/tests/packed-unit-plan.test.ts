@@ -23,7 +23,7 @@ const item = (id = "line1", quantity = 1) => ({
   variant: { weight: 680, length: 206, width: 206, height: 46 },
 })
 
-test("shipment policy validates defaults, overrides and environment", () => {
+test("shipment policy validates defaults and explicit options, ignoring environment", () => {
   assert.equal(shipmentPolicy().multiple_items, "split_shipment")
   assert.equal(
     shipmentPolicy({ multiple_items: "single_shipment" })
@@ -42,7 +42,7 @@ test("shipment policy validates defaults, overrides and environment", () => {
   const old = process.env.SHIPROCKET_MULTIPLE_ITEMS
   try {
     process.env.SHIPROCKET_MULTIPLE_ITEMS = "single_shipment"
-    assert.equal(shipmentPolicy().multiple_items, "single_shipment")
+    assert.equal(shipmentPolicy().multiple_items, "split_shipment")
     assert.equal(
       shipmentPolicy({ multiple_items: "split_shipment" }).multiple_items,
       "split_shipment"

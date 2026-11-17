@@ -1,6 +1,4 @@
-export function shiprocketTimeout(
-  value: unknown = process.env.SHIPROCKET_API_TIMEOUT_MS ?? 60000
-): number {
+export function shiprocketTimeout(value: unknown = 60000): number {
   const timeout = Number(value)
   if (!Number.isSafeInteger(timeout) || timeout < 1000 || timeout > 300000)
     throw new Error(
@@ -8,15 +6,13 @@ export function shiprocketTimeout(
     )
   return timeout
 }
-export const SHIPROCKET_DEFAULT_TIMEOUT_MS = shiprocketTimeout()
+export const SHIPROCKET_DEFAULT_TIMEOUT_MS = 60000
 
 export function isRetryableShiprocketStatus(status: number): boolean {
   return [408, 425, 429, 500, 502, 503, 504].includes(status)
 }
 
-export function shiprocketApiUrl(
-  mode = process.env.SHIPROCKET_MODE ?? "test"
-): string {
+export function shiprocketApiUrl(mode = "test"): string {
   if (mode === "test") return "https://api-sandbox.shiprocket.in/v1/external"
   if (mode === "live") return "https://apiv2.shiprocket.in/v1/external"
   throw new Error("SHIPROCKET_MODE must be test or live")

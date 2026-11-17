@@ -19,14 +19,9 @@ export type ShipmentPolicyOptions = {
 export function shipmentPolicy(
   options: ShipmentPolicyOptions = {}
 ): ShipmentPolicy {
-  const multiple_items =
-    options.multiple_items ??
-    process.env.SHIPROCKET_MULTIPLE_ITEMS ??
-    "split_shipment"
+  const multiple_items = options.multiple_items ?? "split_shipment"
   const single_shipment_dimensions =
-    options.single_shipment_dimensions ??
-    process.env.SHIPROCKET_SINGLE_SHIPMENT_DIMENSIONS ??
-    "largest_item"
+    options.single_shipment_dimensions ?? "largest_item"
   if (!["split_shipment", "single_shipment"].includes(multiple_items))
     throw Error(
       "SHIPROCKET_MULTIPLE_ITEMS must be split_shipment or single_shipment"
@@ -35,10 +30,7 @@ export function shipmentPolicy(
     throw Error(
       "SHIPROCKET_SINGLE_SHIPMENT_DIMENSIONS must be largest_item or stacked"
     )
-  const missing_measurements =
-    options.missing_measurements ??
-    process.env.SHIPROCKET_MISSING_MEASUREMENTS ??
-    "reject"
+  const missing_measurements = options.missing_measurements ?? "reject"
   if (!["reject", "use_defaults"].includes(missing_measurements))
     throw Error(
       "SHIPROCKET_MISSING_MEASUREMENTS must be reject or use_defaults"
@@ -51,8 +43,8 @@ export function shipmentPolicy(
       | "default_item_height_mm",
     fallback: number
   ) {
-    const name = "SHIPROCKET_" + key.toUpperCase()
-    const value = Number(options[key] ?? process.env[name] ?? fallback)
+    const name = key
+    const value = Number(options[key] ?? fallback)
     if (
       !Number.isFinite(value) ||
       value <= (key === "default_item_weight_grams" ? 0 : 5)

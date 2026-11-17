@@ -1,3 +1,4 @@
+import { shiprocketConnection } from "../../../../../../shared/connection"
 import type {
   AuthenticatedMedusaRequest,
   MedusaResponse,
@@ -70,9 +71,7 @@ export const runAwbAction = async (
             )
         }
         const client = new ShiprocketClient({
-          email: process.env.SHIPROCKET_EMAIL,
-          password: process.env.SHIPROCKET_PASSWORD,
-          verify_documents: process.env.SHIPROCKET_VERIFY_DOCUMENTS !== "false",
+          ...(await shiprocketConnection(req.scope)),
           auto_assign_awb: false,
           logger,
         })

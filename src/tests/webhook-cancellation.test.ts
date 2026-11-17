@@ -43,6 +43,10 @@ async function request(
       ip: `198.51.100.${++requestNumber}`,
       scope: {
         resolve(key: string) {
+          if (key === "shiprocketConnection")
+            return {
+              webhookToken: async () => process.env.SHIPROCKET_WEBHOOK_TOKEN,
+            }
           resolved.push(key)
           if (key === "logger")
             return {

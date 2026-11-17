@@ -87,6 +87,14 @@ function fixture(changes: any = {}) {
   return {
     container: {
       resolve: (key: string) => {
+        if (key === "shiprocketConnection")
+          return {
+            runtime: async () => ({
+              email: process.env.SHIPROCKET_EMAIL,
+              password: process.env.SHIPROCKET_PASSWORD,
+              mode: process.env.SHIPROCKET_MODE ?? "test",
+            }),
+          }
         if (key === "query") return query
         throw Error("Unexpected service: " + key)
       },

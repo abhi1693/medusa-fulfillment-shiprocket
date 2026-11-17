@@ -121,10 +121,7 @@ class ShiprocketClientManager {
     logger?: Logger,
     options: ShiprocketClientOptions = {}
   ): ShiprocketClientManager {
-    const mode =
-      options.mode ??
-      (process.env.SHIPROCKET_MODE as "test" | "live" | undefined) ??
-      "test"
+    const mode = options.mode ?? "test"
     const policy = courierPolicy(options)
     const timeout = options.timeout ?? SHIPROCKET_DEFAULT_TIMEOUT_MS
     if (!Number.isSafeInteger(timeout) || timeout < 1000 || timeout > 300000)
@@ -142,8 +139,8 @@ class ShiprocketClientManager {
       require_real_time_tracking: policy.require_real_time_tracking,
       pod_requirement: policy.pod,
       require_call_before_delivery: policy.require_call_before_delivery,
-      email: options.email ?? process.env.SHIPROCKET_EMAIL ?? "",
-      password: options.password ?? process.env.SHIPROCKET_PASSWORD ?? "",
+      email: options.email ?? "",
+      password: options.password ?? "",
       mode,
     }
     const key = createHash("sha256")
@@ -158,10 +155,7 @@ class ShiprocketClientManager {
   }
 
   static hasCredentials(options: ShiprocketClientOptions = {}): boolean {
-    return !!(
-      (options.email ?? process.env.SHIPROCKET_EMAIL) &&
-      (options.password ?? process.env.SHIPROCKET_PASSWORD)
-    )
+    return !!(options.email && options.password)
   }
 
   static reset(): void {
@@ -174,8 +168,8 @@ class ShiprocketClientManager {
 
   private constructor(logger?: Logger, options: ShiprocketClientOptions = {}) {
     this.mode = options.mode ?? "test"
-    this.email = options.email ?? process.env.SHIPROCKET_EMAIL ?? ""
-    this.password = options.password ?? process.env.SHIPROCKET_PASSWORD ?? ""
+    this.email = options.email ?? ""
+    this.password = options.password ?? ""
     this.courierPolicy = courierPolicy(options)
     this.deliveryPreference = this.courierPolicy.selection
     this.logger = logger || fallbackLogger
@@ -638,8 +632,10 @@ export function getShiprocketManager(
 /**
  * Check if Shiprocket credentials are configured.
  */
-export function hasShiprocketCredentials(): boolean {
-  return ShiprocketClientManager.hasCredentials()
+export function hasShiprocketCredentials(
+  options: ShiprocketClientOptions = {}
+): boolean {
+  return ShiprocketClientManager.hasCredentials(options)
 }
 
 /**
