@@ -15,6 +15,8 @@ const required = [
   "scripts/ts-loader.mjs",
   "docs/CONSUMER_ADAPTER.md",
   "src/admin/components/operational-settings.tsx",
+  ".medusa/server/src/testing/existing-order.js",
+  ".medusa/server/src/testing/existing-order.d.ts",
   ".medusa/server/src/providers/shiprocket/index.js",
   ".medusa/server/src/providers/shiprocket/index.d.ts",
   ".medusa/server/src/admin/index.mjs",

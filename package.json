@@ -32,6 +32,10 @@
       "default": "./.medusa/server/src/providers/shiprocket/index.js"
     },
     "./package.json": "./package.json",
+    "./tests/fixtures/existing-order": {
+      "types": "./.medusa/server/src/testing/existing-order.d.ts",
+      "default": "./.medusa/server/src/testing/existing-order.js"
+    },
     "./.medusa/server/src/modules/*": "./.medusa/server/src/modules/*/index.js",
     "./modules/*": "./.medusa/server/src/modules/*/index.js",
     "./providers/*": "./.medusa/server/src/providers/*/index.js",

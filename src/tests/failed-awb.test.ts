@@ -1,7 +1,7 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 import { cancelFailedAwbOrder } from "../shared/failed-awb"
-import { remoteFixture } from "./fixtures/existing-order"
+import { remoteFixture } from "../testing/existing-order"
 const binding = {
   order_id: 100,
   shipment_id: 42,

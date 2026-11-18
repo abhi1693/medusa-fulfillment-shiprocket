@@ -1,6 +1,6 @@
 import { POST as checkAwbRoute } from "../api/admin/shiprocket/fulfillments/[id]/awb/sync/route"
 import { POST as retryAwbRoute } from "../api/admin/shiprocket/fulfillments/[id]/awb/retry/route"
-import { remoteFixture } from "./fixtures/existing-order"
+import { remoteFixture } from "../testing/existing-order"
 import {
   financialSnapshot,
   stableFulfillmentReference,
