@@ -1,0 +1,7 @@
+node_modules
+.medusa
+.git
+.env
+.env.*
+coverage
+*.tgz

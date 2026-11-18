@@ -1,0 +1,26 @@
+name: Publish to npm
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published release tag. Run recovery from master.
+        type: string
+        required: true
+permissions:
+  contents: read
+jobs:
+  validate:
+    uses: ./.github/workflows/ci.yaml
+  publish:
+    needs: validate
+    uses: abhi1693/actions/.github/workflows/npm-publish.yml@v1
+    permissions:
+      contents: read
+      attestations: read
+      id-token: write
+    with:
+      package-name: "@abhi1693/medusa-fulfillment-shiprocket"
+      tag: ${{ github.event.release.tag_name || inputs.tag }}
+      environment: npm-publish
