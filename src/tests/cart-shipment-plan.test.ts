@@ -3,6 +3,7 @@ import test from "node:test"
 import assert from "node:assert/strict"
 import {
   allocateShipments,
+  cartShipmentPlan,
   scopedShipmentContext,
   shipmentLineKey,
 } from "../shared/cart-shipment-plan"
@@ -258,5 +259,19 @@ test("persisted allocations bind warehouse quantities and bill each shipment's f
         []
       ),
     validationResponse(/incomplete/)
+  )
+})
+
+test("rejects an incomplete cart before looking up shipping options", async () => {
+  const container: any = {
+    resolve: () => ({
+      graph: async () => ({
+        data: [{ id: "cart_fixture", items: [{ id: "a", quantity: 1 }, null] }],
+      }),
+    }),
+  }
+  await assert.rejects(
+    cartShipmentPlan(container, "cart_fixture"),
+    /Cannot verify shipping cart/
   )
 })

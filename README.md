@@ -131,6 +131,8 @@ Shipping packages and legacy delivery selection render only after the backend co
 
 When no single location can supply a shipping profile, native inventory levels determine a signed per-origin quantity allocation. Pricing uses each shipment's assigned item weight rather than quoting the entire cart twice. Consumers can combine compatible Standard/Express quotes into one customer choice and submit all constituent options together through the native array shipping-method API. The allocation requires complete coverage and is rechecked before native completion. Existing single-origin alternatives remain unchanged.
 
+Medusa 2.22.4 Query can return nullable relationships. Cart planning rejects an unresolved line item before allocating stock. The completion guard rejects an unresolved shipping method and accepts an ordinary custom method with no shipping option when it carries no Shiprocket allocation. The native Cart module defines `ShippingMethod.shipping_option_id` as nullable. [Query](https://docs.medusajs.com/learn/fundamentals/query) · [List cart shipping options](https://docs.medusajs.com/resources/references/medusa-workflows/listShippingOptionsForCartWorkflow)
+
 The saved allocation binds each order fulfillment to its warehouse's item quantities and monetary share. Each shipment receives its own native shipping-method charge and budget. The consuming store owns rounding and the combined-price UI; its customer charge should sum the per-shipment prices after its rounding policy. No rate lookup creates a shipment or pickup. Carrier AWB and document-generation limitations described above still apply.
 
 ### Verified fulfillment recovery

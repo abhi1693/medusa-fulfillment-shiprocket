@@ -97,7 +97,7 @@ export async function invalidateShiprocketCartQuotes(
   const fingerprint = shiprocketCartFingerprint(cart)
   const methods = (cart.shipping_methods || []).filter(
     (method: any) =>
-      method.shipping_option?.provider_id?.endsWith("_shiprocket") &&
+      method?.shipping_option?.provider_id?.endsWith("_shiprocket") &&
       method.shipping_option.price_type === "calculated"
   )
   const ids: string[] = []
@@ -236,9 +236,16 @@ export async function assertFreshShiprocketCartQuotes(
   if (current?.completed_at) return
   const plan = await cartShipmentPlan(container, cartId)
   for (const method of current?.shipping_methods || []) {
+    if (!method)
+      throw new MedusaError(
+        MedusaError.Types.INVALID_DATA,
+        "Cannot verify the selected shipping method. Review delivery before completing checkout."
+      )
     const allocation = signedCourierClaim(method.data?.shiprocket_quote, true)
       ?.quote?.shipment_allocation
-    const expected = plan[method.shipping_option_id]
+    const expected = method.shipping_option_id
+      ? plan[method.shipping_option_id]
+      : undefined
     if (
       (allocation || expected) &&
       JSON.stringify(allocation) !== JSON.stringify(expected)

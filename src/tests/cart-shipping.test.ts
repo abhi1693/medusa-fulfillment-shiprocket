@@ -9,6 +9,7 @@ import assert from "node:assert/strict"
 import {
   shiprocketPaymentPriceLocked,
   shiprocketCartFingerprint,
+  assertFreshShiprocketCartQuotes,
   invalidateShiprocketCartQuotes,
   restoreShiprocketCartQuotes,
   SHIPROCKET_CART_FINGERPRINT,
@@ -235,4 +236,21 @@ test("an accepted payment charge survives expiry-only refresh but item edits sti
     ["shipping"]
   )
   assert.deepEqual(removed, [["shipping"]])
+})
+
+test("requires resolved shipping methods at checkout and permits manual methods without an option", async () => {
+  const cart = {
+    id: "cart_fixture",
+    items: [],
+    shipping_methods: [null] as ({ shipping_option_id: string | null } | null)[],
+  }
+  const container: any = {
+    resolve: () => ({ graph: async () => ({ data: [cart] }) }),
+  }
+  await assert.rejects(
+    assertFreshShiprocketCartQuotes(container, cart.id),
+    /Cannot verify the selected shipping method/
+  )
+  cart.shipping_methods = [{ shipping_option_id: null }]
+  await assertFreshShiprocketCartQuotes(container, cart.id)
 })

@@ -251,12 +251,15 @@ export async function cartShipmentPlan(
     ],
   })
   if (!cart?.items?.length) return {}
+  const items: (Row | null)[] = cart.items
+  if (!items.every((item) => item !== null))
+    throw Error("Cannot verify shipping cart")
   const { result: options } = await listShippingOptionsForCartWorkflow(
     container
   ).run({ input: { cart_id: cartId } })
   const fingerprint = shiprocketCartFingerprint(cart)
   if (!fingerprint) throw Error("Cannot verify shipping cart")
-  return allocateShipments(cart.items, options as Row[], fingerprint)
+  return allocateShipments(items, options as Row[], fingerprint)
 }
 export function scopedShipmentContext(context: Row, optionId: unknown): Row {
   const plan = context.shiprocket_shipment_allocations
