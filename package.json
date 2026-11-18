@@ -14,7 +14,10 @@
   "license": "MIT",
   "files": [
     ".medusa/server",
+    "!.medusa/server/src/tests/**",
     "src",
+    "!src/tests/**",
+    "docs",
     "scripts",
     "tsconfig.json",
     "source.json",

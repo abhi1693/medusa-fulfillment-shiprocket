@@ -16,7 +16,7 @@ The paid signed package plan freezes quantities, measurements, strategy and carr
 
 For cables or other items with missing native shipping fields, opt into `missing_measurements: "use_defaults"`; the default `reject` preserves strict validation. Only null/undefined fields use defaults. Recorded variant/product values, including small actual weights, remain authoritative; malformed/nonpositive values still fail validation. Defaults are `default_item_weight_grams: 500` and `default_item_length_mm`, `default_item_width_mm`, `default_item_height_mm`: `6`. The weight matches Shiprocket's documented platform default; 6 mm is the smallest whole millimetre above its API's strict >0.5 cm dimension threshold, not a claimed default carton. All operational values come from the saved database settings. Custom default weights must be positive; default dimensions must exceed 5 mm. Resolved defaults are frozen into the signed paid measurements and never written back to the catalog.
 
-Shiprocket fulfillment and live delivery rates for Medusa v2. Package name: `@abhi1693/medusa-fulfillment-shiprocket`. No npm release has been published.
+Shiprocket fulfillment and live delivery rates for Medusa v2. Install the scoped release with `npm install @abhi1693/medusa-fulfillment-shiprocket@2.0.0`.
 
 ## Requirements and local verification
 
@@ -26,7 +26,7 @@ Node >=22.22.0 (Docker pins 24.21.0), npm 12.2.2, Medusa 2.22.4, PostgreSQL and 
 docker compose run --rm --build plugin-test
 ```
 
-This clean standalone installation runs typechecking, offline tests, server/Admin build, declaration/export checks and an npm tarball inspection. It does not use the consuming store application code, a database, carrier credentials or real shipments. CI runs the same command. `npm pack` creates a local archive only; there is no publishing job.
+This clean standalone installation runs typechecking, offline tests, server/Admin build, declaration/export checks and an npm tarball inspection. It does not use the consuming store application code, a database, carrier credentials or real shipments. CI runs the same command. The Prepare release workflow builds and attests the npm tarball. Publishing the GitHub release starts the npm publisher, which verifies the archive and its provenance.
 
 For a local consuming application, build this package, run `npm pack`, then install the resulting `.tgz` into your Medusa project. Pin reviewed HTTPS Git revisions for source installs. The package `prepare` script builds and checks its server/Admin/type exports during installation; approve only that exact reviewed revision in npm lifecycle policy.
 
@@ -119,9 +119,9 @@ MIT, original copyright (c) 2024 SAM-AEL; maintained adaptations by Abhimanyu Sa
 
 ## Current validation and remaining carrier limits
 
-The source passes 93 offline plugin tests, typechecking, server/Admin builds and package export checks. These checks do not certify successful carrier AWB assignment. Actual sandbox AWB requests returned HTTP 200 with `awb_assign_status: 0` after roughly 31 seconds; the precise carrier rejection is unresolved. No automatic pickup is performed by fulfillment creation.
+The release suite exercises offline plugin tests, typechecking, server/Admin builds and package exports. These checks do not certify successful carrier AWB assignment. Actual sandbox AWB requests returned HTTP 200 with `awb_assign_status: 0` after roughly 31 seconds; the precise carrier rejection is unresolved. No automatic pickup is performed by fulfillment creation.
 
-The retained document generator currently requests a manifest using `order_ids` before a pickup. The sandbox lifecycle guide instead requires an assigned AWB plus requested pickup and a `shipment_id` array. That known discrepancy is deliberately recorded rather than silently changing lifecycle behavior. No npm release has been published.
+Manifest generation requires a confirmed pickup and submits the saved shipment ID. See [pickup and document verification](docs/pickup-documents.md) for the carrier prerequisites and the tested recovery behavior.
 
 ## Order widget availability
 

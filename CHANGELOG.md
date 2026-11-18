@@ -1,18 +1,25 @@
-## Unreleased — database-backed Admin settings
+# Changelog — @abhi1693/medusa-fulfillment-shiprocket
+
+## 2.0.0
+
+First public release under the `@abhi1693` scope.
+
+### Database-backed Admin settings
 
 - Store one verified test/live connection and encrypted operational settings in the owning module; remove carrier environment fallbacks.
 - Add reusable native Admin connection, shipping and existing pickup-to-location mapping components with revision checks and permission boundaries.
 - Keep deferred AWB signing material in the database, initialize disabled defaults through normal migrations and preserve pending assignments.
 - Remove the redundant location widget and place courier budget details inside selectable cards.
 
-## Unreleased — fulfillment and manual pickup linking
+### Fulfillment and manual pickup linking
 
 - Replace automatic pickup-address synchronization with explicit existing-ID linking.
 - Add measured parcels, editable weight prefill and minimum outbound dimensions.
 - Correct INR serialization and partial allocations; retain uncertain remote drafts.
 - Include explicit same-mode courier UI and document its consuming-store API contract.
 - Preserve request timeout options and sanitized timing/business-result diagnostics.
-- Full sandbox AWB success and documented manifest sequencing remain unresolved.
+- Handle nullable Medusa cart relations when preparing shipment plans.
+- Require confirmed pickup for manifest generation, and preserve carrier identifiers across timeout recovery.
 
 # Changelog — @sam-ael/medusa-plugin-shiprocket
 
