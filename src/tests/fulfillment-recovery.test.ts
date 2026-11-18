@@ -9,7 +9,7 @@ import {
   remoteFixture,
   sameAddressRemoteFixture,
   shipmentDetailFixture,
-} from "./fixtures/existing-order"
+} from "../testing/existing-order"
 const expected = {
   order_id: "medusa_" + "a".repeat(40),
   shipping_customer_name: "Fixture",

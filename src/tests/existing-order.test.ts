@@ -10,7 +10,7 @@ import {
   remoteFixture,
   shipmentDetailFixture,
   sameAddressRemoteFixture,
-} from "./fixtures/existing-order"
+} from "../testing/existing-order"
 const binding = {
   order_id: 100,
   shipment_id: 42,
