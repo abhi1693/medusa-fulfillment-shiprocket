@@ -1,6 +1,6 @@
 # Changelog — @abhi1693/medusa-fulfillment-shiprocket
 
-## 2.0.0
+## 0.0.1
 
 First public release under the `@abhi1693` scope.
 
@@ -21,9 +21,9 @@ First public release under the `@abhi1693` scope.
 - Handle nullable Medusa cart relations when preparing shipment plans.
 - Require confirmed pickup for manifest generation, and preserve carrier identifiers across timeout recovery.
 
-# Changelog — @sam-ael/medusa-plugin-shiprocket
+## Upstream history — @sam-ael/medusa-plugin-shiprocket
 
-## 2.0.0 (2026-10-16) — Security hardening (breaking)
+### 2.0.0 (2026-10-16) — Security hardening (breaking)
 
 - **Breaking:** `GET /store/shiprocket/delivery-estimate` returns a generic failure message to anonymous callers. Upstream/axios details stay server-side (previously echoed, enabling serviceability probing).
 - **Breaking:** Validation errors no longer echo submitted phone/pincode values (PII reached logs and admin error bodies). Messages report lengths only.
