@@ -16,7 +16,7 @@ The paid signed package plan freezes quantities, measurements, strategy and carr
 
 For cables or other items with missing native shipping fields, opt into `missing_measurements: "use_defaults"`; the default `reject` preserves strict validation. Only null/undefined fields use defaults. Recorded variant/product values, including small actual weights, remain authoritative; malformed/nonpositive values still fail validation. Defaults are `default_item_weight_grams: 500` and `default_item_length_mm`, `default_item_width_mm`, `default_item_height_mm`: `6`. The weight matches Shiprocket's documented platform default; 6 mm is the smallest whole millimetre above its API's strict >0.5 cm dimension threshold, not a claimed default carton. All operational values come from the saved database settings. Custom default weights must be positive; default dimensions must exceed 5 mm. Resolved defaults are frozen into the signed paid measurements and never written back to the catalog.
 
-Shiprocket fulfillment and live delivery rates for Medusa v2. Install the scoped release with `npm install @abhi1693/medusa-fulfillment-shiprocket@2.0.0`.
+Shiprocket fulfillment and live delivery rates for Medusa v2. Install the scoped release with `npm install @abhi1693/medusa-fulfillment-shiprocket@0.0.1`.
 
 ## Requirements and local verification
 
