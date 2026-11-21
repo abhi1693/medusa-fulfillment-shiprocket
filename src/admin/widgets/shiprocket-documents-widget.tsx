@@ -525,7 +525,7 @@ const ShiprocketDocumentsWidget = ({ data }: DetailWidgetProps<AdminOrder>) => {
               aria-label="Sync tracking and documents"
               onClick={syncTracking}
               disabled={syncing}
-              className="bg-ui-bg-base hover:bg-ui-bg-subtle h-8 w-8 p-0 border-ui-border-strong shadow-sm group"
+              className="bg-ui-bg-base hover:bg-ui-bg-subtle h-8 w-8 p-0 border-ui-border-strong shadow-xs group"
             >
               <ArrowPath
                 className={`w-3.5 h-3.5 ${syncing ? "animate-spin text-ui-fg-interactive" : "text-ui-fg-subtle group-hover:text-ui-fg-base"}`}
@@ -538,7 +538,7 @@ const ShiprocketDocumentsWidget = ({ data }: DetailWidgetProps<AdminOrder>) => {
         {(tracking?.weight || tracking?.origin) && (
           <div className="flex flex-wrap items-center gap-3 pt-3">
             {tracking.weight && (
-              <div className="flex items-center gap-x-1.5 px-2 py-0.5 rounded bg-ui-bg-component border border-ui-border-base shadow-sm">
+              <div className="flex items-center gap-x-1.5 px-2 py-0.5 rounded-sm bg-ui-bg-component border border-ui-border-base shadow-xs">
                 <Text size="xsmall" className="text-ui-fg-muted">
                   ⚖️
                 </Text>
@@ -745,7 +745,7 @@ const ShiprocketDocumentsWidget = ({ data }: DetailWidgetProps<AdminOrder>) => {
                 <div key={index} className="flex gap-x-5 group">
                   <div className="relative flex flex-col items-center shrink-0">
                     <div
-                      className={`z-10 flex h-5 w-5 shrink-0 mt-0.5 items-center justify-center rounded-full border-2 bg-ui-bg-base transition-all ${index === 0 ? "border-ui-fg-interactive ring-4 ring-ui-tag-blue-bg scale-110 shadow-sm" : "border-ui-border-base group-hover:border-ui-border-strong"}`}
+                      className={`z-10 flex h-5 w-5 shrink-0 mt-0.5 items-center justify-center rounded-full border-2 bg-ui-bg-base transition-all ${index === 0 ? "border-ui-fg-interactive ring-4 ring-ui-tag-blue-bg scale-110 shadow-xs" : "border-ui-border-base group-hover:border-ui-border-strong"}`}
                     >
                       <div
                         className={`h-2 w-2 rounded-full ${index === 0 ? "bg-ui-fg-interactive animate-pulse" : "bg-ui-fg-muted group-hover:bg-ui-fg-base"}`}
@@ -767,7 +767,7 @@ const ShiprocketDocumentsWidget = ({ data }: DetailWidgetProps<AdminOrder>) => {
                         )}
                       </Text>
                       <div className="flex items-center gap-x-3 text-ui-fg-muted font-medium">
-                        <div className="flex items-center gap-x-1 text-[11px] whitespace-nowrap bg-ui-bg-component px-1.5 py-0.5 rounded border border-ui-border-base">
+                        <div className="flex items-center gap-x-1 text-[11px] whitespace-nowrap bg-ui-bg-component px-1.5 py-0.5 rounded-sm border border-ui-border-base">
                           <span>📅</span>{" "}
                           {scan.date
                             ? new Date(scan.date).toLocaleString(undefined, {
