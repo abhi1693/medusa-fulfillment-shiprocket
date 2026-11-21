@@ -122,11 +122,11 @@ export function SettingsLoading({ title }: { title: string }) {
         {[1, 2, 3].map((n) => (
           <div key={n} className="flex justify-between py-3">
             <div
-              className="bg-ui-bg-component rounded"
+              className="bg-ui-bg-component rounded-sm"
               style={{ width: "30%", height: 16 }}
             />
             <div
-              className="bg-ui-bg-component rounded"
+              className="bg-ui-bg-component rounded-sm"
               style={{ width: "40%", height: 16 }}
             />
           </div>

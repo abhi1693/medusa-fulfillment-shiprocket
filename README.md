@@ -20,7 +20,7 @@ Shiprocket fulfillment and live delivery rates for Medusa v2. Install the scoped
 
 ## Requirements and local verification
 
-Node >=22.22.0 (Docker pins 24.21.0), npm 12.2.2, Medusa 2.22.4, PostgreSQL and a configured Medusa event bus. The Admin build pins Medusa UI 4.2.11. Other Medusa versions have not been validated.
+Node >=22.22.0 (Docker pins 24.21.0), npm 12.2.2, Medusa 2.23.0, PostgreSQL and a configured Medusa event bus. The Admin build uses Medusa UI 4.3.0, React 19 and Vite 8.
 
 ```sh
 docker compose run --rm --build plugin-test
