@@ -1,22 +1,19 @@
-# Medusa fulfillment Shiprocket
+# Medusa Shiprocket Fulfillment
 
-## Pickup address mappings
+[![CI](https://github.com/abhi1693/medusa-fulfillment-shiprocket/actions/workflows/ci.yaml/badge.svg?branch=master)](https://github.com/abhi1693/medusa-fulfillment-shiprocket/actions/workflows/ci.yaml)
+[![Medusa 2.22.4](https://img.shields.io/badge/Medusa-2.22.4-7c3aed)](https://docs.medusajs.com/)
+[![MIT license](https://img.shields.io/github/license/abhi1693/medusa-fulfillment-shiprocket)](LICENSE)
+[![Sponsor](https://img.shields.io/badge/Sponsor-abhi1693-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/abhi1693)
 
-The settings pickup table maps existing Shiprocket pickup addresses to existing Medusa stock locations. It does not create or delete addresses/locations or edit their names, contact details or physical addresses. Create, update and remove change only the established `shiprocket_pickup_id` and `shiprocket_pickup_scope` metadata keys through the public native update workflow. Multiple stock locations may share a pickup; each location keeps one pickup link. Pickup mapping is managed only from the settings table; no location-detail widget is registered.
+Connect Medusa stock locations to Shiprocket pickup addresses, quote live INR delivery rates at checkout, and create carrier orders from Medusa fulfillments. Staff can configure packing and whole-rupee rounding in Admin. The consuming application supplies the checkout and order-management adapters described in the [consumer integration guide](docs/CONSUMER_ADAPTER.md).
 
-`GET /admin/shiprocket-pickup-mappings` projects current pickup addresses and location associations; `POST` accepts strict `create`, `update` or `remove` commands bound to the connection scope and the location's revision. A fresh carrier lookup validates references before create/update; remove needs no carrier request. Mapping commands use a per-location public locking-module mutex and recheck native revisions after the carrier read. Stale/different-connection and missing-address associations remain visible for review. Native metadata updates outside these entry points are not a cross-module atomic transaction; no native tables are edited directly.
+[Install](#install) · [Configure Medusa](#medusa-configuration) · [Map pickup addresses](#pickup-address-mappings) · [Set shipping rates](#rates-units-and-courier-choice) · [Carrier validation](#current-validation-and-remaining-carrier-limits)
 
-Consumers authorize reads with their stock-location/settings read capabilities, and writes with the owning stock-location management capability. The Uniek adapter declares these profiles separately from credential-management permissions. The reusable `source/admin/components/pickup-mappings` component takes `canRead` and `canWrite`; the host still enforces server authorization. It renders a searchable, paginated table, existing-record selectors, remove confirmation and read-only/error states. No pickup is scheduled by mapping an address.
+## Install
 
-## Multi-item package policy
-
-Provider option `multiple_items` accepts `split_shipment` (default: one carrier order per physical unit) or `single_shipment` (one combined carrier order per pickup/shipping group). Quantity three produces three orders in split mode. Combined mode sums actual weights across quantities and quotes one package. Set `single_shipment_dimensions` to `largest_item` (default: all three dimensions from the greatest-volume unit) or `stacked` (maximum length/width and summed quantity-weighted heights). Configure these fields in Shipping → Packing. Invalid values are rejected at startup. Largest-item dimensions are an approximation, not proof that all contents fit that carton.
-
-The paid signed package plan freezes quantities, measurements, strategy and carrier cost. Configuration/catalog changes cannot repartition it; a combined package must be fulfilled together. Existing split plans continue through their saved plan. Checkout pricing, package dispatch, courier selection and timeout recovery all use the same package snapshot. Separate AWB, pickup and document actions continue per resulting native fulfillment. Consumers still supply the public package/courier/recovery adapters described below.
-
-For cables or other items with missing native shipping fields, opt into `missing_measurements: "use_defaults"`; the default `reject` preserves strict validation. Only null/undefined fields use defaults. Recorded variant/product values, including small actual weights, remain authoritative; malformed/nonpositive values still fail validation. Defaults are `default_item_weight_grams: 500` and `default_item_length_mm`, `default_item_width_mm`, `default_item_height_mm`: `6`. The weight matches Shiprocket's documented platform default; 6 mm is the smallest whole millimetre above its API's strict >0.5 cm dimension threshold, not a claimed default carton. All operational values come from the saved database settings. Custom default weights must be positive; default dimensions must exceed 5 mm. Resolved defaults are frozen into the signed paid measurements and never written back to the catalog.
-
-Shiprocket fulfillment and live delivery rates for Medusa v2. Install the scoped release with `npm install @abhi1693/medusa-fulfillment-shiprocket@0.0.2`.
+```sh
+npm install @abhi1693/medusa-fulfillment-shiprocket@0.0.2
+```
 
 ## Requirements and local verification
 
@@ -65,6 +62,22 @@ Use the single Admin connection detail page to verify and save the API-user emai
 In Shiprocket **Settings → API**, enable **Buyer's Details Access → Allowed** for this API user as well as its required module permissions. Without buyer access, shipment GETs can return HTTP 200 with `Not Authorized` contact/address values. Existing-shipment verification remains blocked until access is fixed. See the official [API-user setup instructions](https://apidocs.shiprocket.in/?version=latest).
 
 Never commit actual credentials. Sandbox authentication availability and rate limits remain carrier-controlled. Test mode is the validated integration focus; the standalone suite does not certify production carrier behavior.
+
+## Pickup address mappings
+
+The settings pickup table maps existing Shiprocket pickup addresses to existing Medusa stock locations. It does not create or delete addresses/locations or edit their names, contact details or physical addresses. Create, update and remove change only the established `shiprocket_pickup_id` and `shiprocket_pickup_scope` metadata keys through the public native update workflow. Multiple stock locations may share a pickup; each location keeps one pickup link. Pickup mapping is managed only from the settings table; no location-detail widget is registered.
+
+`GET /admin/shiprocket-pickup-mappings` projects current pickup addresses and location associations; `POST` accepts strict `create`, `update` or `remove` commands bound to the connection scope and the location's revision. A fresh carrier lookup validates references before create/update; remove needs no carrier request. Mapping commands use a per-location public locking-module mutex and recheck native revisions after the carrier read. Stale/different-connection and missing-address associations remain visible for review. Native metadata updates outside these entry points are not a cross-module atomic transaction; no native tables are edited directly.
+
+Consumers authorize reads with their stock-location/settings read capabilities, and writes with the owning stock-location management capability. The Uniek adapter declares these profiles separately from credential-management permissions. The reusable `source/admin/components/pickup-mappings` component takes `canRead` and `canWrite`; the host still enforces server authorization. It renders a searchable, paginated table, existing-record selectors, remove confirmation and read-only/error states. No pickup is scheduled by mapping an address.
+
+## Multi-item package policy
+
+Provider option `multiple_items` accepts `split_shipment` (default: one carrier order per physical unit) or `single_shipment` (one combined carrier order per pickup/shipping group). Quantity three produces three orders in split mode. Combined mode sums actual weights across quantities and quotes one package. Set `single_shipment_dimensions` to `largest_item` (default: all three dimensions from the greatest-volume unit) or `stacked` (maximum length/width and summed quantity-weighted heights). Configure these fields in Shipping → Packing. Invalid values are rejected at startup. Largest-item dimensions are an approximation, not proof that all contents fit that carton.
+
+The paid signed package plan freezes quantities, measurements, strategy and carrier cost. Configuration/catalog changes cannot repartition it; a combined package must be fulfilled together. Existing split plans continue through their saved plan. Checkout pricing, package dispatch, courier selection and timeout recovery all use the same package snapshot. Separate AWB, pickup and document actions continue per resulting native fulfillment. Consumers still supply the public package/courier/recovery adapters described below.
+
+For cables or other items with missing native shipping fields, opt into `missing_measurements: "use_defaults"`; the default `reject` preserves strict validation. Only null/undefined fields use defaults. Recorded variant/product values, including small actual weights, remain authoritative; malformed/nonpositive values still fail validation. Defaults are `default_item_weight_grams: 500` and `default_item_length_mm`, `default_item_width_mm`, `default_item_height_mm`: `6`. The weight matches Shiprocket's documented platform default; 6 mm is the smallest whole millimetre above its API's strict >0.5 cm dimension threshold, not a claimed default carton. All operational values come from the saved database settings. Custom default weights must be positive; default dimensions must exceed 5 mm. Resolved defaults are frozen into the signed paid measurements and never written back to the catalog.
 
 ## Pickup locations
 
