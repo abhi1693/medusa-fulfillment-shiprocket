@@ -43,6 +43,7 @@ export function pickupRows(body: any): any[] {
     : Array.isArray(body?.data)
       ? body.data
       : body?.data?.shipping_address
+  if (rows === null) return []
   if (Array.isArray(rows)) return rows
   if (body?.data?.id) return [body.data]
   if (body?.id) return [body]

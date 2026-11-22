@@ -52,6 +52,8 @@ test("supports unfiltered and ID-filtered API shapes", () => {
     row,
   ])
     assert.deepEqual(pickupRows(body), [row])
+  assert.deepEqual(pickupRows({ data: { shipping_address: null } }), [])
+  assert.throws(() => pickupRows({ data: {} }))
   assert.throws(() => pickupRows({}))
 })
 test("checkout does not copy legacy or client-supplied pickup snapshots", () => {
