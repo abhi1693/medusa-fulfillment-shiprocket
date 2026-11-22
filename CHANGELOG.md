@@ -1,5 +1,9 @@
 # Changelog — @abhi1693/medusa-fulfillment-shiprocket
 
+## 0.0.2
+
+Supports custom whole-rupee shipping rounding increments and accepts an empty pickup address list from Shiprocket. Targets Medusa 2.22.4.
+
 ## 0.0.1
 
 First public release under the `@abhi1693` scope.

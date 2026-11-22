@@ -1,6 +1,6 @@
 {
   "name": "@abhi1693/medusa-fulfillment-shiprocket",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Shiprocket India fulfillment and live rates provider for Medusa v2.",
   "author": "SAM-AEL (https://www.github.com/SAM-AEL)",
   "homepage": "https://github.com/abhi1693/medusa-fulfillment-shiprocket#readme",
