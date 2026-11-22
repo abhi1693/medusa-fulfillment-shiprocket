@@ -160,6 +160,9 @@ test("strict schema rejects unknown fields, invalid enums, non-booleans and unsa
   assert.equal(settings.default_item_weight_grams, 500)
   assert.equal(settings.default_item_length_mm, 6)
   assert.equal(settings.timeout, 60000)
+  assert.ok(
+    operationalSettings.safeParse({ ...settings, rounding_rupees: 25 }).success
+  )
   for (const patch of [
     { timeout: 999 },
     { timeout: 300001 },
@@ -173,7 +176,8 @@ test("strict schema rejects unknown fields, invalid enums, non-booleans and unsa
     { webhook_payload_retention_days: 0 },
     { webhook_payload_retention_days: 366 },
     { rate_cache_ttl_ms: -1 },
-    { rounding_rupees: 5 },
+    { rounding_rupees: 0 },
+    { rounding_rupees: 1.5 },
     { secret: "injected" },
   ])
     assert.equal(

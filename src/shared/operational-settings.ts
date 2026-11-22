@@ -26,12 +26,11 @@ export const operationalSettings = z
     auto_assign_awb: z.boolean(),
     rate_diagnostics: z.boolean(),
     webhook_payload_retention_days: z.number().int().min(1).max(365),
-    rounding_rupees: z.union([
-      z.literal(1),
-      z.literal(10),
-      z.literal(50),
-      z.literal(100),
-    ]),
+    rounding_rupees: z
+      .number()
+      .int()
+      .positive()
+      .max(Math.floor(Number.MAX_SAFE_INTEGER / 100)),
     automatic_recovery: z.boolean(),
   })
   .strict()

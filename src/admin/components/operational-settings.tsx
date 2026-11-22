@@ -29,6 +29,7 @@ type Snapshot = {
 type Field = {
   key: keyof OperationalSettings
   label: string
+  suggestions?: number[]
   choices?: [string, string][]
   min?: number
   max?: number
@@ -43,12 +44,9 @@ const groups: { title: string; fields: Field[] }[] = [
       {
         key: "rounding_rupees",
         label: "Round customer shipping up to (₹)",
-        choices: [
-          ["1", "₹1"],
-          ["10", "₹10"],
-          ["50", "₹50"],
-          ["100", "₹100"],
-        ],
+        suggestions: [1, 10, 50, 100],
+        min: 1,
+        max: Math.floor(Number.MAX_SAFE_INTEGER / 100),
       },
       {
         key: "automatic_recovery",
@@ -222,6 +220,7 @@ function display(
   value: OperationalSettings[keyof OperationalSettings]
 ) {
   if (typeof value === "boolean") return value ? "Enabled" : "Disabled"
+  if (field.key === "rounding_rupees") return `₹${value}`
   if (field.choices)
     return (
       field.choices.find(([v]) => v === String(value))?.[1] ?? String(value)
@@ -532,6 +531,9 @@ export default function OperationalSettingsForm({
                             <Input
                               id={id}
                               aria-describedby={hint ? help : undefined}
+                              list={
+                                field.suggestions ? id + "-presets" : undefined
+                              }
                               type="number"
                               required
                               min={field.min}
@@ -546,6 +548,15 @@ export default function OperationalSettingsForm({
                               }
                               disabled={disabled}
                             />
+                          )}
+                          {field.suggestions && (
+                            <datalist id={id + "-presets"}>
+                              {field.suggestions.map((amount) => (
+                                <option key={amount} value={amount}>
+                                  ₹{amount}
+                                </option>
+                              ))}
+                            </datalist>
                           )}
                         </>
                       )}
