@@ -93,28 +93,28 @@
     "axios": "^1.7.0"
   },
   "devDependencies": {
-    "@medusajs/admin-sdk": "2.22.4",
-    "@medusajs/cli": "2.22.4",
-    "@medusajs/framework": "2.22.4",
-    "@medusajs/icons": "2.22.4",
-    "@medusajs/medusa": "2.22.4",
-    "@medusajs/test-utils": "2.22.4",
-    "@medusajs/ui": "4.2.11",
+    "@medusajs/admin-sdk": "2.23.0",
+    "@medusajs/cli": "2.23.0",
+    "@medusajs/framework": "2.23.0",
+    "@medusajs/icons": "2.23.0",
+    "@medusajs/medusa": "2.23.0",
+    "@medusajs/test-utils": "2.23.0",
+    "@medusajs/ui": "4.3.0",
     "@swc/core": "1.16.22",
     "@types/node": "24.19.2",
-    "@types/react": "18.3.31",
-    "@types/react-dom": "18.3.7",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "prop-types": "^15.8.1",
-    "react": "18.3.1",
-    "react-dom": "18.3.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "ts-node": "10.9.2",
     "typescript": "5.9.3",
-    "vite": "7.3.7",
+    "vite": "^8.3.8",
     "yalc": "^1.0.0-pre.53"
   },
   "peerDependencies": {
-    "@medusajs/framework": "^2.22.4",
-    "@medusajs/medusa": "^2.22.4"
+    "@medusajs/framework": "^2.23.0",
+    "@medusajs/medusa": "^2.23.0"
   },
   "engines": {
     "node": ">=22.22.0"
